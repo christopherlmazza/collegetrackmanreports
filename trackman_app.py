@@ -1089,20 +1089,12 @@ def generate_heatmap(p, pitch_type, metric="run_value"):
 # HELPER: Parse game date from session
 # ===========================================================================
 def parse_session_date(session, fallback_date):
-    gdate = None
-    for field in ["gameDateLocal", "gameDateUtc", "gameDate", "startDateTimeLocal", "startDateTimeUtc"]:
+    # API schema confirms gameDateLocal and gameDateUtc exist on session objects
+    for field in ["gameDateLocal", "gameDateUtc"]:
         val = session.get(field, "")
         if val and isinstance(val, str):
             try:
-                gdate = datetime.fromisoformat(val.replace("Z", "").split("+")[0]).date()
-                return gdate
-            except:
-                pass
-    for k, v in session.items():
-        if isinstance(v, str) and len(v) >= 10:
-            try:
-                gdate = datetime.fromisoformat(v.replace("Z", "").split("+")[0]).date()
-                return gdate
+                return datetime.fromisoformat(val.replace("Z", "").split("+")[0]).date()
             except:
                 pass
     return fallback_date
@@ -1202,7 +1194,7 @@ if "sessions" in st.session_state and "selected_team" in st.session_state:
                 except:
                     return None
 
-            with ThreadPoolExecutor(max_workers=8) as executor:
+            with ThreadPoolExecutor(max_workers=2) as executor:
                 futures = {executor.submit(fetch_plays_only, s): s for s in team_sessions}
                 for future in as_completed(futures):
                     result = future.result()
@@ -1288,7 +1280,7 @@ if "sessions" in st.session_state and "selected_team" in st.session_state:
                     return (sid, session, gdate, opp, plays_raw, balls_raw)
 
                 results = []
-                with ThreadPoolExecutor(max_workers=8) as executor:
+                with ThreadPoolExecutor(max_workers=2) as executor:
                     futures = {executor.submit(fetch_one_session, item): item
                                for item in sessions_to_fetch.items()}
                     for future in as_completed(futures):
@@ -1389,7 +1381,7 @@ if "sessions" in st.session_state and "selected_team" in st.session_state:
                                     return (session, plays_raw, balls_raw)
 
                                 results = []
-                                with ThreadPoolExecutor(max_workers=8) as executor:
+                                with ThreadPoolExecutor(max_workers=2) as executor:
                                     futures = {executor.submit(fetch_season_session, s): s for s in season_team_sessions}
                                     for future in as_completed(futures):
                                         r = future.result()
@@ -1597,7 +1589,7 @@ if "selected_team" in st.session_state:
                     return (session, plays_raw, balls_raw)
 
                 results = []
-                with ThreadPoolExecutor(max_workers=8) as executor:
+                with ThreadPoolExecutor(max_workers=2) as executor:
                     futures = {executor.submit(fetch_pm_session, s): s for s in pm_team_sessions}
                     for future in as_completed(futures):
                         r = future.result()
