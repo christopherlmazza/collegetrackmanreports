@@ -389,8 +389,10 @@ def get_headers():
     return {"Authorization": f"Bearer {token}", "Accept": "application/json", "Content-Type": "application/json"}
 
 # ===========================================================================
-# FETCH SESSIONS — with full diagnostic logging
+# FETCH SESSIONS — with retry/backoff on 429
 # ===========================================================================
+import time
+
 @st.cache_data(ttl=3600)
 def fetch_sessions(date_from_str, date_to_str):
     headers = get_headers()
@@ -401,31 +403,41 @@ def fetch_sessions(date_from_str, date_to_str):
     url = f"{BASE_URL}/api/v1/discovery/game/sessions"
     payload = {"sessionType": "All", "utcDateFrom": date_from_str, "utcDateTo": date_to_str}
 
-    try:
-        resp = requests.post(url, headers=headers, json=payload, timeout=30)
-    except Exception as e:
-        st.sidebar.error(f"❌ Network error fetching sessions: {e}")
-        return []
+    for attempt in range(5):
+        try:
+            time.sleep(attempt * 2)  # 0s, 2s, 4s, 6s, 8s between attempts
+            resp = requests.post(url, headers=headers, json=payload, timeout=30)
+        except Exception as e:
+            st.sidebar.error(f"❌ Network error fetching sessions: {e}")
+            return []
 
-    if resp.status_code != 200:
-        st.sidebar.error(
-            f"❌ Sessions API returned HTTP {resp.status_code}\n\n"
-            f"**URL:** {url}\n\n"
-            f"**Payload sent:** {json.dumps(payload)}\n\n"
-            f"**Response body:** {resp.text[:500]}"
-        )
-        return []
+        if resp.status_code == 429:
+            retry_after = int(resp.headers.get("Retry-After", 5 * (attempt + 1)))
+            st.sidebar.warning(f"⏳ Rate limited. Waiting {retry_after}s (attempt {attempt+1}/5)...")
+            time.sleep(retry_after)
+            continue
 
-    data = resp.json()
-    if not data:
-        st.sidebar.warning(
-            f"⚠️ API returned an empty list for {date_from_str[:10]} → {date_to_str[:10]}. "
-            f"No games exist in TrackMan for this date range."
-        )
-    else:
-        st.sidebar.success(f"✅ {len(data)} session(s) found for {date_from_str[:10]} → {date_to_str[:10]}")
+        if resp.status_code != 200:
+            st.sidebar.error(
+                f"❌ Sessions API returned HTTP {resp.status_code}\n\n"
+                f"**URL:** {url}\n\n"
+                f"**Payload sent:** {json.dumps(payload)}\n\n"
+                f"**Response body:** {resp.text[:500]}"
+            )
+            return []
 
-    return data
+        data = resp.json()
+        if not data:
+            st.sidebar.warning(
+                f"⚠️ API returned an empty list for {date_from_str[:10]} → {date_to_str[:10]}. "
+                f"No games exist in TrackMan for this date range."
+            )
+        else:
+            st.sidebar.success(f"✅ {len(data)} session(s) found for {date_from_str[:10]} → {date_to_str[:10]}")
+        return data
+
+    st.sidebar.error("❌ Rate limited by TrackMan API after 5 retries. Wait a minute and hit Refresh.")
+    return []
 
 @st.cache_data(ttl=3600)
 def fetch_game_data(session_id):
