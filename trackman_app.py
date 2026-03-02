@@ -31,6 +31,34 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, timedelta, datetime
 warnings.filterwarnings("ignore")
 
+# ===========================================================================
+# DISK CACHE — persists across redeploys and restarts
+# ===========================================================================
+CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)) if "__file__" in dir() else os.getcwd(), ".trackman_cache")
+os.makedirs(CACHE_DIR, exist_ok=True)
+
+def _cache_path(key):
+    import hashlib
+    return os.path.join(CACHE_DIR, hashlib.md5(key.encode()).hexdigest() + ".json")
+
+def disk_cache_get(key):
+    path = _cache_path(key)
+    if os.path.exists(path):
+        try:
+            with open(path) as f:
+                return json.load(f)
+        except:
+            pass
+    return None
+
+def disk_cache_set(key, data):
+    path = _cache_path(key)
+    try:
+        with open(path, "w") as f:
+            json.dump(data, f)
+    except:
+        pass
+
 # ---- Stuff+ Model (optional) ----
 _stuff_models = {}   # {pitch_type: xgb model}
 _stuff_scales = {}   # {pitch_type: {"mean": ..., "std": ...}}
@@ -439,17 +467,49 @@ def fetch_sessions(date_from_str, date_to_str):
     st.sidebar.error("❌ Rate limited by TrackMan API after 5 retries. Wait a minute and hit Refresh.")
     return []
 
-@st.cache_data(ttl=86400, show_spinner=False)  # 24h — past game data never changes
 def fetch_game_data(session_id):
+    cache_key = f"gamedata_{session_id}"
+    cached = disk_cache_get(cache_key)
+    if cached is not None:
+        return cached["plays"], cached["balls"]
+
     headers = get_headers()
     if not headers: return [], []
-    resp = requests.get(f"{BASE_URL}/api/v1/data/game/plays/{session_id}", headers=headers)
-    if resp.status_code != 200: return [], []
-    plays = resp.json()
-    if not isinstance(plays, list): return [], []
-    resp = requests.get(f"{BASE_URL}/api/v1/data/game/balls/{session_id}", headers=headers)
-    if resp.status_code != 200: return plays, []
-    balls = resp.json()
+
+    for attempt in range(4):
+        try:
+            if attempt > 0:
+                time.sleep(5 * attempt)
+            resp = requests.get(f"{BASE_URL}/api/v1/data/game/plays/{session_id}", headers=headers, timeout=30)
+            if resp.status_code == 429:
+                time.sleep(15 * (attempt + 1))
+                continue
+            if resp.status_code != 200: return [], []
+            plays = resp.json()
+            if not isinstance(plays, list): return [], []
+            break
+        except:
+            return [], []
+    else:
+        return [], []
+
+    for attempt in range(4):
+        try:
+            if attempt > 0:
+                time.sleep(5 * attempt)
+            resp = requests.get(f"{BASE_URL}/api/v1/data/game/balls/{session_id}", headers=headers, timeout=30)
+            if resp.status_code == 429:
+                time.sleep(15 * (attempt + 1))
+                continue
+            if resp.status_code != 200: return plays, []
+            balls = resp.json()
+            break
+        except:
+            return plays, []
+    else:
+        return plays, []
+
+    disk_cache_set(cache_key, {"plays": plays, "balls": balls})
     return plays, balls
 
 def extract_teams_from_sessions(sessions):
