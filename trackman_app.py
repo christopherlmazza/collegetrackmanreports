@@ -375,7 +375,7 @@ def draw_release(ax, data, pts):
 # ===========================================================================
 # API FUNCTIONS (cached)
 # ===========================================================================
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=3600)
 def get_auth_token():
     resp = requests.post(TOKEN_URL, data={
         "grant_type": "client_credentials", "client_id": CLIENT_ID, "client_secret": CLIENT_SECRET})
@@ -393,7 +393,7 @@ def get_headers():
 # ===========================================================================
 import time
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=3600, show_spinner=False)
 def fetch_sessions(date_from_str, date_to_str):
     headers = get_headers()
     if not headers:
@@ -439,7 +439,7 @@ def fetch_sessions(date_from_str, date_to_str):
     st.sidebar.error("❌ Rate limited by TrackMan API after 5 retries. Wait a minute and hit Refresh.")
     return []
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=86400, show_spinner=False)  # 24h — past game data never changes
 def fetch_game_data(session_id):
     headers = get_headers()
     if not headers: return [], []
