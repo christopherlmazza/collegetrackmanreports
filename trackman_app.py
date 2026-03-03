@@ -1188,10 +1188,26 @@ with st.sidebar:
                 st.session_state.pop("pitcher_names", None)
                 st.session_state.pop("_team_key", None)
 
-    if st.button("🔄 Refresh", use_container_width=True):
-        st.cache_data.clear()
-        for k in ["_date_key", "pitcher_outings", "pitcher_outings_meta", "pitcher_names", "_team_key"]:
+    if st.button("🔄 New Date / Team", use_container_width=True):
+        # Only clear session state — disk cache stays intact so we don't re-hit the API
+        for k in ["_date_key", "pitcher_outings", "pitcher_outings_meta", "pitcher_names", "_team_key",
+                  "sessions", "teams", "selected_team", "_pm_active_key", "_pm_pitchers",
+                  "_season_outings_" + st.session_state.get("selected_team", ""),
+                  "_hm_loaded"]:
             st.session_state.pop(k, None)
+        st.rerun()
+
+    if st.button("🗑️ Force Re-fetch from API", use_container_width=True, help="Only use this if data looks wrong. Clears all caches and re-fetches from TrackMan."):
+        # Nuclear option — clears disk cache too
+        import shutil
+        if os.path.exists(CACHE_DIR):
+            shutil.rmtree(CACHE_DIR)
+            os.makedirs(CACHE_DIR, exist_ok=True)
+        st.cache_data.clear()
+        for k in ["_date_key", "pitcher_outings", "pitcher_outings_meta", "pitcher_names", "_team_key",
+                  "sessions", "teams", "selected_team"]:
+            st.session_state.pop(k, None)
+        st.sidebar.success("✅ Full cache cleared. Re-fetching from TrackMan...")
         st.rerun()
 
     if "teams" in st.session_state and st.session_state["teams"]:
