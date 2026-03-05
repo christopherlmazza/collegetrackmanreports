@@ -5,6 +5,10 @@ numpy
 matplotlib
 scipy
 scikit-learn
+lightgbm
+joblib
+pyarrow
+
 
 
 
