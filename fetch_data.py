@@ -31,10 +31,31 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # ===========================================================================
 # CREDENTIALS
 # ===========================================================================
-CLIENT_ID = st.secrets["CLIENT_ID"]
-CLIENT_SECRET = st.secrets["CLIENT_SECRET"]
-BASE_URL      = "https://dataapi.trackmanbaseball.com"
-TOKEN_URL     = "https://login.trackman.com/connect/token"
+BASE_URL  = "https://dataapi.trackmanbaseball.com"
+TOKEN_URL = "https://login.trackman.com/connect/token"
+
+# Load credentials from .streamlit/secrets.toml (same file Streamlit uses)
+def _load_secrets():
+    secrets_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), ".streamlit", "secrets.toml"
+    )
+    if not os.path.exists(secrets_path):
+        print(f"ERROR: secrets.toml not found at {secrets_path}")
+        sys.exit(1)
+    try:
+        import tomllib          # Python 3.11+
+    except ImportError:
+        try:
+            import tomli as tomllib   # pip install tomli
+        except ImportError:
+            print("ERROR: Run:  pip install tomli")
+            sys.exit(1)
+    with open(secrets_path, "rb") as f:
+        return tomllib.load(f)
+
+_secrets  = _load_secrets()
+CLIENT_ID     = _secrets["CLIENT_ID"]
+CLIENT_SECRET = _secrets["CLIENT_SECRET"]
 
 SEASON_START  = date(2026, 2, 1)   # adjust each year
 DATA_DIR      = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
@@ -97,19 +118,27 @@ def is_d1_session(s):
 # API FETCHERS  (polite — 1.5s sleep, retries on failure)
 # ===========================================================================
 def fetch_sessions(date_from_str, date_to_str):
-    headers = get_headers()
-    if not headers: return []
-    resp = requests.post(
-        f"{BASE_URL}/api/v1/discovery/game/sessions",
-        headers=headers,
-        json={"sessionType": "All", "utcDateFrom": date_from_str, "utcDateTo": date_to_str},
-        timeout=60,
-    )
-    if not resp.ok:
-        print(f"  Session fetch failed: {resp.status_code} — {resp.text[:100]}")
-        return []
-    data = resp.json()
-    return data if isinstance(data, list) else data.get("sessions", [])
+    for attempt in range(5):
+        headers = get_headers()
+        if not headers: return []
+        resp = requests.post(
+            f"{BASE_URL}/api/v1/discovery/game/sessions",
+            headers=headers,
+            json={"sessionType": "All", "utcDateFrom": date_from_str, "utcDateTo": date_to_str},
+            timeout=60,
+        )
+        if resp.status_code == 429:
+            wait = int(resp.headers.get("Retry-After", 60 * (attempt + 1)))
+            print(f"  Rate limited, waiting {wait}s...")
+            time.sleep(wait)
+            continue
+        if not resp.ok:
+            print(f"  Session fetch failed: {resp.status_code} — {resp.text[:100]}")
+            return []
+        data = resp.json()
+        return data if isinstance(data, list) else data.get("sessions", [])
+    print("  Session fetch failed after 5 retries.")
+    return []
 
 def fetch_game_data(session_id):
     for attempt in range(4):
@@ -373,5 +402,4 @@ def _write_timestamp():
     print(f"  Timestamp written → {ts_path}")
 
 if __name__ == "__main__":
-
     main()
