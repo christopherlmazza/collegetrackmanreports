@@ -401,5 +401,25 @@ def _write_timestamp():
         }, f, indent=2)
     print(f"  Timestamp written → {ts_path}")
 
+def _git_push():
+    import subprocess
+    repo_dir = os.path.dirname(os.path.abspath(__file__))
+    print("\n  Pushing data to GitHub...")
+    cmds = [
+        ["git", "add", "data/pitches.parquet", "data/last_updated.json"],
+        ["git", "commit", "-m", f"data update {date.today()}"],
+        ["git", "push"],
+    ]
+    for cmd in cmds:
+        result = subprocess.run(cmd, cwd=repo_dir, capture_output=True, text=True)
+        if result.returncode != 0:
+            if "nothing to commit" in result.stdout + result.stderr:
+                print("  Nothing new to push.")
+                return
+            print(f"  Git error: {result.stderr.strip()}")
+            return
+    print("  ✅ Pushed to GitHub — Streamlit Cloud will redeploy automatically.")
+
 if __name__ == "__main__":
     main()
+    _git_push()
