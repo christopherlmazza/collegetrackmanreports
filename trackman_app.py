@@ -327,6 +327,14 @@ def load_all_pitches():
     df = pd.read_parquet(path)
     # Parse GameDate
     df["GameDate"] = pd.to_datetime(df["GameDate"], errors="coerce").dt.date
+    # Normalize pitch type names
+    pt_normalize = {
+        "FourSeamFastBall": "Fastball",
+        "TwoSeamFastBall": "Sinker",
+        "Changeup": "ChangeUp",
+    }
+    if "PitchType" in df.columns:
+        df["PitchType"] = df["PitchType"].replace(pt_normalize)
     return df, path
 
 def get_last_updated():
