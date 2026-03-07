@@ -540,15 +540,15 @@ def generate_pitcher_page(p, pname, gdate, opp):
 
         data_row = ri + 1
         if avg_velo_val is not None:
-            grade_cells[(data_row, 3)] = (pt, "velo", avg_velo_val, True)
+            grade_cells[(data_row, 2)] = (pt, "velo", avg_velo_val, True)
         if xwoba_val is not None:
-            grade_cells[(data_row, 12)] = (pt, "xwoba", xwoba_val, False)
+            grade_cells[(data_row, 11)] = (pt, "xwoba", xwoba_val, False)
         if zone_val is not None:
-            grade_cells[(data_row, 13)] = (pt, "zone_pct", zone_val, True)
+            grade_cells[(data_row, 12)] = (pt, "zone_pct", zone_val, True)
         if whiff_val is not None:
-            grade_cells[(data_row, 14)] = (pt, "whiff_pct", whiff_val, True)
+            grade_cells[(data_row, 13)] = (pt, "whiff_pct", whiff_val, True)
         if chase_val is not None:
-            grade_cells[(data_row, 15)] = (pt, "chase_pct", chase_val, True)
+            grade_cells[(data_row, 14)] = (pt, "chase_pct", chase_val, True)
 
     all_sw_ct = sw.sum()
     all_whiff = f"{wh.sum() / all_sw_ct * 100:.1f}%" if all_sw_ct else "0%"
@@ -794,15 +794,15 @@ def generate_season_summary(pitcher_name, outings, date_from, date_to):
 
         data_row = ri + 1
         if avg_velo_val is not None:
-            grade_cells[(data_row, 3)] = (pt, "velo", avg_velo_val, True)
+            grade_cells[(data_row, 2)] = (pt, "velo", avg_velo_val, True)
         if xwoba_val is not None:
-            grade_cells[(data_row, 12)] = (pt, "xwoba", xwoba_val, False)
+            grade_cells[(data_row, 11)] = (pt, "xwoba", xwoba_val, False)
         if zone_val is not None:
-            grade_cells[(data_row, 13)] = (pt, "zone_pct", zone_val, True)
+            grade_cells[(data_row, 12)] = (pt, "zone_pct", zone_val, True)
         if whiff_val is not None:
-            grade_cells[(data_row, 14)] = (pt, "whiff_pct", whiff_val, True)
+            grade_cells[(data_row, 13)] = (pt, "whiff_pct", whiff_val, True)
         if chase_val is not None:
-            grade_cells[(data_row, 15)] = (pt, "chase_pct", chase_val, True)
+            grade_cells[(data_row, 14)] = (pt, "chase_pct", chase_val, True)
 
     all_sw_ct = sw.sum()
     all_whiff = f"{wh.sum() / all_sw_ct * 100:.1f}%" if all_sw_ct else "0%"
