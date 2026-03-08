@@ -1078,7 +1078,7 @@ def call_groq_api(messages, system_prompt):
     groq_messages = [{"role": "system", "content": system_prompt}] + messages
 
     payload = {
-        "model": "deepseek-r1-distill-llama-70b",
+        "model": "qwen-qwq-32b",
         "max_tokens": 4000,
         "messages": groq_messages,
         "temperature": 0.2,
@@ -1181,7 +1181,7 @@ RULES:
             fig = None
             result_text = ""
 
-            # Strip DeepSeek R1 chain-of-thought thinking tags
+            # Strip chain-of-thought thinking tags (DeepSeek R1, Qwen QwQ)
             import re as _re
             response = _re.sub(r"<think>.*?</think>", "", response, flags=_re.DOTALL).strip()
 
