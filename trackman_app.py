@@ -1111,7 +1111,7 @@ df_all, parquet_path = load_all_pitches()
 # AI CHATBOT
 # ===========================================================================
 with st.expander("🤖 AI Baseball Analyst", expanded=False):
-    st.markdown("Ask any question about pitching or hitting data. The AI has full access to all data in the parquet file.")
+    st.markdown("Ask any question about pitching or hitting data. The AI has full access to all data in the parquet file. Warning: AI can be incorrect, verify on your own")
 
     if "chat_history" not in st.session_state:
         st.session_state["chat_history"] = []
@@ -1779,3 +1779,4 @@ if "selected_team" in st.session_state:
                             st.write(size_data)
 else:
     st.info("Select a team above to use Pitch Mix")
+
