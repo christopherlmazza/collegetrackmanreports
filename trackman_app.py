@@ -1078,8 +1078,8 @@ def call_groq_api(messages, system_prompt):
     groq_messages = [{"role": "system", "content": system_prompt}] + messages
 
     payload = {
-        "model": "llama-3.3-70b-versatile",
-        "max_tokens": 2000,
+        "model": "deepseek-r1-distill-llama-70b",
+        "max_tokens": 4000,
         "messages": groq_messages,
         "temperature": 0.2,
     }
@@ -1180,6 +1180,10 @@ RULES:
             answer_text = ""
             fig = None
             result_text = ""
+
+            # Strip DeepSeek R1 chain-of-thought thinking tags
+            import re as _re
+            response = _re.sub(r"<think>.*?</think>", "", response, flags=_re.DOTALL).strip()
 
             if "ANSWER:" in response:
                 answer_part = response.split("ANSWER:")[1]
