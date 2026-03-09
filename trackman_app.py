@@ -2318,120 +2318,22 @@ _AI_FUNCTIONS = {
 }
 
 _FUNCTION_DOCS = """
-PRE-BUILT FUNCTIONS — USE THESE FIRST before writing custom pandas code.
-All take `df` as the first argument. Functions returning charts return (text, fig).
+PRE-BUILT FUNCTIONS (always prefer these over custom pandas code):
 
-VELOCITY:
-  lib_pitcher_avg_velo(df, pitcher, pitch_type=None)
-  lib_pitcher_max_velo(df, pitcher, pitch_type=None)
-  lib_pitcher_velo_by_pitch(df, pitcher)
-  lib_pitcher_velo_spread(df, pitcher, pitch_type=None)       ← std dev, percentiles
-  lib_pitcher_velo_by_inning(df, pitcher, pitch_type=None)
-  lib_pitcher_velo_trend(df, pitcher, pitch_type=None)        ← chart
-  lib_velo_chart(df, pitcher)                                 ← violin chart
-  lib_team_avg_velo(df, team, pitch_type=None)
-  lib_top_velo_pitchers(df, n=15, pitch_type=None, min_n=30)
+VELOCITY: lib_pitcher_avg_velo(df,pitcher,pitch_type) | lib_pitcher_max_velo | lib_pitcher_velo_by_pitch | lib_pitcher_velo_spread | lib_pitcher_velo_by_inning | lib_pitcher_velo_trend(returns fig) | lib_velo_chart(fig) | lib_team_avg_velo(df,team,pitch_type) | lib_top_velo_pitchers(df,n,pitch_type)
+SPIN/MOVEMENT: lib_pitcher_spin | lib_pitcher_spin_by_pitch | lib_pitcher_movement | lib_pitcher_movement_by_pitch | lib_movement_chart(fig) | lib_pitcher_extension | lib_pitcher_release_point | lib_release_point_chart(fig) | lib_pitcher_vaa | lib_pitcher_vaa_by_pitch
+WHIFF/SWING: lib_pitcher_whiff(df,pitcher,pitch_type) | lib_pitcher_whiff_by_pitch | lib_pitcher_whiff_vs_hand | lib_pitcher_whiff_trend(fig) | lib_whiff_chart(fig) | lib_pitcher_swing_pct | lib_pitcher_contact_pct | lib_team_whiff(df,team,pitch_type) | lib_top_whiff_pitchers(df,n,pitch_type)
+ZONE/CHASE/LOCATION: lib_pitcher_zone_pct | lib_pitcher_zone_by_pitch | lib_pitcher_chase_pct | lib_pitcher_chase_by_pitch | lib_pitcher_iz_whiff | lib_pitcher_csw | lib_pitcher_csw_by_pitch | lib_pitcher_called_strike_pct | lib_pitcher_strike_pct | lib_pitcher_first_pitch_strike | lib_pitcher_zone_thirds | lib_pitcher_zone_thirds_inzone | lib_pitcher_miss_direction | lib_pitcher_avg_location | lib_pitcher_arm_glove | lib_location_chart(df,pitcher,pitch_type,batter_side)(fig) | lib_heatmap_chart(fig)
+PITCH MIX: lib_pitcher_pitch_mix | lib_pitcher_mix_vs_hand | lib_pitcher_mix_by_count | lib_pitcher_mix_by_inning | lib_pitch_mix_chart(fig) | lib_team_pitch_mix
+OUTCOMES: lib_pitcher_k_pct | lib_pitcher_bb_pct | lib_pitcher_k_bb | lib_pitcher_ip | lib_pitcher_hits | lib_pitcher_hr | lib_pitcher_hbp | lib_pitcher_xwoba | lib_pitcher_xwoba_by_pitch | lib_pitcher_hard_hit | lib_pitcher_gb_fb | lib_pitcher_full_summary
+SPLITS: lib_pitcher_hand_splits | lib_pitcher_count_splits | lib_pitcher_risp_splits | lib_pitcher_outing_log
+TEAM: lib_team_summary | lib_team_walks | lib_team_strikeouts | lib_team_ip | lib_team_leaderboard(df,team,stat) | lib_all_teams_leaderboard(df,stat) | lib_conference_leaderboard_pitchers(df,stat) | lib_team_batting_summary | lib_team_hard_hit
+BATTER: lib_batter_exit_velo | lib_batter_launch_angle | lib_batter_whiff_pct | lib_batter_chase_pct | lib_batter_k_bb
+TRENDS: lib_pitcher_outing_chart(df,pitcher,stat) stat=velo/whiff/zone/chase/csw
+COMPARE: lib_compare_pitchers(df,p1,p2,stat) | lib_compare_pitchers_full(df,p1,p2)
 
-SPIN / MOVEMENT / SHAPE:
-  lib_pitcher_spin(df, pitcher, pitch_type=None)
-  lib_pitcher_spin_by_pitch(df, pitcher)
-  lib_pitcher_movement(df, pitcher, pitch_type=None)          ← IVB + HB
-  lib_pitcher_movement_by_pitch(df, pitcher)
-  lib_movement_chart(df, pitcher)                             ← chart
-  lib_pitcher_extension(df, pitcher, pitch_type=None)
-  lib_pitcher_release_point(df, pitcher, pitch_type=None)
-  lib_release_point_chart(df, pitcher)                        ← chart
-  lib_pitcher_vaa(df, pitcher, pitch_type=None)               ← vert approach angle
-  lib_pitcher_vaa_by_pitch(df, pitcher)
-
-WHIFF / SWING / CONTACT:
-  lib_pitcher_whiff(df, pitcher, pitch_type=None)
-  lib_pitcher_whiff_by_pitch(df, pitcher)
-  lib_pitcher_whiff_vs_hand(df, pitcher, pitch_type=None)
-  lib_pitcher_whiff_trend(df, pitcher, pitch_type=None)       ← chart
-  lib_whiff_chart(df, pitcher)                                ← bar chart
-  lib_pitcher_swing_pct(df, pitcher, pitch_type=None)
-  lib_pitcher_contact_pct(df, pitcher, pitch_type=None)
-  lib_team_whiff(df, team, pitch_type=None)
-  lib_top_whiff_pitchers(df, n=15, pitch_type=None, min_swings=30)
-
-ZONE / CHASE / LOCATION:
-  lib_pitcher_zone_pct(df, pitcher, pitch_type=None)
-  lib_pitcher_zone_by_pitch(df, pitcher)
-  lib_pitcher_chase_pct(df, pitcher, pitch_type=None)
-  lib_pitcher_chase_by_pitch(df, pitcher)
-  lib_pitcher_iz_whiff(df, pitcher, pitch_type=None)          ← in-zone whiff
-  lib_pitcher_csw(df, pitcher, pitch_type=None)               ← called strike + whiff %
-  lib_pitcher_csw_by_pitch(df, pitcher)
-  lib_pitcher_called_strike_pct(df, pitcher, pitch_type=None)
-  lib_pitcher_strike_pct(df, pitcher, pitch_type=None)
-  lib_pitcher_first_pitch_strike(df, pitcher)
-  lib_pitcher_zone_thirds(df, pitcher, pitch_type=None)       ← upper/mid/lower of ALL
-  lib_pitcher_zone_thirds_inzone(df, pitcher, pitch_type=None)← upper/mid/lower of IN-ZONE
-  lib_pitcher_miss_direction(df, pitcher, pitch_type=None)    ← high/low/arm/glove miss %
-  lib_pitcher_avg_location(df, pitcher, pitch_type=None)
-  lib_pitcher_arm_glove(df, pitcher, pitch_type=None)
-  lib_location_chart(df, pitcher, pitch_type=None, batter_side=None) ← scatter chart
-  lib_heatmap_chart(df, pitcher, pitch_type=None, batter_side=None)  ← density heatmap
-
-PITCH MIX:
-  lib_pitcher_pitch_mix(df, pitcher)
-  lib_pitcher_mix_vs_hand(df, pitcher)
-  lib_pitcher_mix_by_count(df, pitcher)
-  lib_pitcher_mix_by_inning(df, pitcher)
-  lib_pitch_mix_chart(df, pitcher)                            ← pie chart
-  lib_team_pitch_mix(df, team)
-
-OUTCOMES:
-  lib_pitcher_k_pct(df, pitcher)
-  lib_pitcher_bb_pct(df, pitcher)
-  lib_pitcher_k_bb(df, pitcher)
-  lib_pitcher_ip(df, pitcher)
-  lib_pitcher_hits(df, pitcher)
-  lib_pitcher_hr(df, pitcher)
-  lib_pitcher_hbp(df, pitcher)
-  lib_pitcher_xwoba(df, pitcher, pitch_type=None)
-  lib_pitcher_xwoba_by_pitch(df, pitcher)
-  lib_pitcher_hard_hit(df, pitcher)                           ← avg EV, hard hit%
-  lib_pitcher_gb_fb(df, pitcher)                              ← GB%/LD%/FB%
-  lib_pitcher_full_summary(df, pitcher)                       ← everything at once
-
-SPLITS:
-  lib_pitcher_hand_splits(df, pitcher)                        ← full LHB/RHB breakdown
-  lib_pitcher_count_splits(df, pitcher, pitch_type=None)
-  lib_pitcher_risp_splits(df, pitcher)                        ← 2-strike vs non
-  lib_pitcher_outing_log(df, pitcher)
-
-TEAM:
-  lib_team_summary(df, team)
-  lib_team_walks(df, team)
-  lib_team_strikeouts(df, team)
-  lib_team_ip(df, team)
-  lib_team_leaderboard(df, team, stat, n=10)  stat: whiff/velo/zone/chase/k_pct/csw/ip
-  lib_all_teams_leaderboard(df, stat, n=20)   stat: whiff/velo/zone/chase/k_pct/csw/xwoba
-  lib_conference_leaderboard_pitchers(df, stat, n=25, min_pitches=100)  ← all D1 pitchers
-
-HITTING / BATTER:
-  lib_batter_exit_velo(df, batter)
-  lib_batter_launch_angle(df, batter)
-  lib_batter_whiff_pct(df, batter)
-  lib_batter_chase_pct(df, batter)
-  lib_batter_k_bb(df, batter)
-  lib_team_batting_summary(df, team)
-  lib_team_hard_hit(df, team)
-
-TRENDS / CHARTS:
-  lib_pitcher_outing_chart(df, pitcher, stat)  stat: velo/whiff/zone/chase/csw
-
-COMPARISON:
-  lib_compare_pitchers(df, p1, p2, stat)       ← single stat comparison
-  lib_compare_pitchers_full(df, p1, p2)        ← full table comparison
-
-CALLING CHART FUNCTIONS:
-  result, fig = lib_velo_chart(df, "Smith")
-
-PITCH TYPE ALIASES accepted: fastball/fb, sinker/two seam, cutter/cut,
-  slider/sl, curveball/curve/cb, changeup/change/ch, splitter/split, sweeper
+For chart functions: result, fig = lib_xyz(df, ...)
+pitch_type aliases: fastball/fb, sinker, cutter/cut, slider/sl, curveball/curve/cb, changeup/change/ch, sweeper, splitter
 """
 
 
@@ -2555,136 +2457,55 @@ with st.expander("🤖 AI Baseball Analyst", expanded=False):
 
         schema = st.session_state["df_schema"]
 
-        system_prompt = f"""You are an expert baseball analyst assistant for a college baseball coaching staff. You translate natural language baseball questions into precise data answers using TrackMan pitch tracking data.
+        system_prompt = f"""You are a baseball data analyst for a college coaching staff. Answer questions in plain coach-friendly language using TrackMan data.
 
-DATAFRAME SCHEMA:
-{schema}
+SCHEMA: {schema}
 
 {_FUNCTION_DOCS}
 
-NATURAL LANGUAGE TO DATA TRANSLATION GUIDE
-===========================================
+LANGUAGE GUIDE (translate these terms automatically):
+- "exit velo / hardest hit / off the bat / crushed" = ExitSpeed column (batted balls)
+- "pitch velo / gun reading / how hard he throws / fastest pitch" = RelSpeed column
+- "swing and miss / whiffs / misses / chases" = whiff% via lib_pitcher_whiff
+- "up in zone / elevated / leaves it up / high" = PlateLocHeight > 2.83 (upper third)
+- "low / down / sinks / basement" = PlateLocHeight < 2.17 (lower third)
+- "misses high/low/arm side/glove side" = lib_pitcher_miss_direction
+- "movement / break / how much it moves" = lib_pitcher_movement
+- "rise / riding fastball" = InducedVertBreak positive
+- "sink / drops" = InducedVertBreak negative
+- "run / tails / arm side" = HorzBreak
+- "throws strikes / command / control" = lib_pitcher_zone_pct or lib_pitcher_strike_pct
+- "walks / free passes" = lib_pitcher_bb_pct
+- "strikeouts / Ks / punchouts" = lib_pitcher_k_pct
+- "hardest hit by [team] hitters" = _find_team_batting then ExitSpeed.max()
+- "vs lefties/righties / splits" = lib_pitcher_hand_splits
+- "out pitch / put-away / best pitch" = lib_pitcher_whiff_by_pitch
+- "arsenal / what does he throw" = lib_pitcher_pitch_mix
+- "game by game / outing log" = lib_pitcher_outing_log
+- "upper third / zone thirds" = lib_pitcher_zone_thirds
+- "first pitch strike / gets ahead" = lib_pitcher_first_pitch_strike
 
-VELOCITY:
-  "fastest pitch / hardest thrower / top velo / gun reading"  -> RelSpeed (pitch speed)
-  "hardest hit ball / exit velo / off the bat / crushed it"   -> ExitSpeed (batted ball)
-  "how hard does he throw / what is his velo"                 -> lib_pitcher_avg_velo
-  "top gun / best fastball / max velo"                        -> lib_pitcher_max_velo
-  "hardest hit ball by a [team] hitter"                       -> _find_team_batting then ExitSpeed.max()
-  "how hard did [team] hit the ball"                          -> lib_team_batting_summary
+EXACT COLUMN NAMES (never invent others):
+RelSpeed=pitch velo | ExitSpeed=batted ball velo | PlateLocHeight/PlateLocSide=location
+PitchCall(StrikeSwinging/StrikeCalled/Ball/FoulBall/FoulBallNotFieldable/InPlay/HitByPitch)
+PlayResult(Single/Double/Triple/HomeRun/Out/Error/FieldersChoice/Sacrifice)
+KorBB(Strikeout/Walk) | BatterSide(Left/Right) | TopBottom(Top=away bats/Bottom=home bats)
+InducedVertBreak | HorzBreak | SpinRate | Extension | LaunchAngle | InZone(True/False)
 
-SWING & MISS / WHIFF:
-  "swing and miss / misses / whiffs / fooled / chased"        -> lib_pitcher_whiff
-  "can't hit / swings through / misses a lot"                 -> lib_pitcher_whiff_by_pitch
-  "swing rate / how often do they swing"                      -> lib_pitcher_swing_pct
-  "chases out of zone / expands the zone / bites"             -> lib_pitcher_chase_pct
-  "misses in the zone / in-zone swing and miss"               -> lib_pitcher_iz_whiff
-  "called strike plus whiff / CSW"                            -> lib_pitcher_csw
+RULES:
+1. ALWAYS use a lib_ function if one exists — they are accurate
+2. result = string answer, fig = None (or figure for charts)
+3. For charts: result, fig = lib_xyz(df, ...)
+4. Fuzzy matching handles all names — pass them as the user typed
+5. Never invent column names
 
-LOCATION:
-  "up in the zone / elevated / high / leaves it up"           -> PlateLocHeight > 2.833 (upper third)
-  "down in the zone / low / sinks / basement / downhill"      -> PlateLocHeight < 2.167 (lower third)
-  "misses high / misses low / misses arm side / glove side"   -> lib_pitcher_miss_direction
-  "where does he locate / location tendencies"                -> lib_pitcher_avg_location or lib_location_chart
-  "upper third / top of zone / elevated"                      -> lib_pitcher_zone_thirds
-  "in the zone / around the plate / throws strikes"           -> lib_pitcher_zone_pct
-  "arm side / runs in on righties / tails"                    -> HorzBreak positive
-  "glove side / cuts away / back door"                        -> HorzBreak negative
-
-COMMAND / CONTROL:
-  "throws strikes / in the zone"                              -> lib_pitcher_zone_pct
-  "wild / walks guys / control issues"                        -> lib_pitcher_bb_pct
-  "first pitch strike / gets ahead early"                     -> lib_pitcher_first_pitch_strike
-  "falls behind / pitches from behind in count"               -> lib_pitcher_count_splits
-  "two-strike approach / finishing pitches"                   -> lib_pitcher_risp_splits
-
-MOVEMENT / STUFF:
-  "movement / how much it breaks / break"                     -> lib_pitcher_movement
-  "rise / riding fastball / how much it rises"                -> InducedVertBreak (positive = rise)
-  "sink / drops off the table / how much it sinks"            -> InducedVertBreak (negative)
-  "run / tails / arm side movement"                           -> HorzBreak
-  "spin rate / tight spin / rpm"                              -> lib_pitcher_spin
-  "extension / how far out front / release distance"          -> lib_pitcher_extension
-  "steep angle / downward angle / approach angle"             -> lib_pitcher_vaa
-  "release point / where he releases it"                      -> lib_pitcher_release_point
-
-PITCH MIX / ARSENAL:
-  "what does he throw / his pitches / arsenal"                -> lib_pitcher_pitch_mix
-  "how often does he throw X / pitch usage"                   -> lib_pitcher_pitch_mix
-  "what does he throw to lefties or righties"                 -> lib_pitcher_mix_vs_hand
-  "what does he throw in two-strike counts / full count"      -> lib_pitcher_mix_by_count
-  "go-to pitch / out pitch / put-away pitch"                  -> lib_pitcher_whiff_by_pitch (highest whiff)
-  "does he have a good changeup / curveball / slider"         -> lib_pitcher_whiff_by_pitch
-
-OUTCOMES:
-  "strikeouts / punchouts / Ks"                               -> lib_pitcher_k_pct
-  "walks / free passes / BB"                                  -> lib_pitcher_bb_pct
-  "innings pitched / how long did he go"                      -> lib_pitcher_ip
-  "hard contact / barrels / squared up"                       -> lib_pitcher_hard_hit
-  "ground balls / worm burners / fly balls / popups"          -> lib_pitcher_gb_fb
-  "home runs / dingers / gave up a bomb"                      -> lib_pitcher_hr
-  "hits allowed / how many hits"                              -> lib_pitcher_hits
-  "hit batters / plunked"                                     -> lib_pitcher_hbp
-  "quality of contact / expected stats"                       -> lib_pitcher_xwoba
-
-SPLITS:
-  "vs lefties / against left-handed hitters / LHH / LHB"     -> lib_pitcher_hand_splits
-  "vs righties / against right-handed hitters / RHH / RHB"   -> lib_pitcher_hand_splits
-  "with two strikes / finishing pitches"                      -> lib_pitcher_risp_splits
-  "early counts / first pitch / 0-0 count"                   -> lib_pitcher_count_splits
-  "game by game / outing by outing / each start"              -> lib_pitcher_outing_log
-
-TEAM QUESTIONS:
-  "how many walks did [team] give up"                         -> lib_team_walks
-  "how many strikeouts did [team] get"                        -> lib_team_strikeouts
-  "innings pitched by [team]"                                 -> lib_team_ip
-  "best pitcher on [team] / team leaderboard"                 -> lib_team_leaderboard
-  "how does [team] stack up / team overview"                  -> lib_team_summary
-  "hardest throwing team / best whiff rate league-wide"       -> lib_all_teams_leaderboard
-  "how hard did [team] hit the ball / their hitters"          -> lib_team_batting_summary
-
-CRITICAL - ONLY USE THESE EXACT COLUMN NAMES (never invent column names):
-  Pitch velocity   = RelSpeed          (NOT velocity, speed, PitchVelocity, mph)
-  Exit velocity    = ExitSpeed         (NOT ExitVelocity, EV, HitSpeed, BattedBallSpeed)
-  Pitch location   = PlateLocHeight, PlateLocSide
-  Pitcher          = Pitcher
-  Batter           = Batter
-  Home team        = HomeTeam
-  Away team        = AwayTeam
-  Pitch type       = PitchType
-  Pitch result     = PitchCall         (values: StrikeSwinging, StrikeCalled, Ball, FoulBall, FoulBallNotFieldable, InPlay, HitByPitch)
-  Play result      = PlayResult        (values: Single, Double, Triple, HomeRun, Out, Error, FieldersChoice, Sacrifice)
-  K or BB          = KorBB             (values: Strikeout, Walk)
-  Batter hand      = BatterSide        (values: Left, Right)
-  Inning half      = TopBottom         (Top = away batting = home pitching, Bottom = home batting = away pitching)
-  In zone          = InZone            (True/False precomputed)
-  Vertical break   = InducedVertBreak
-  Horizontal break = HorzBreak
-  Spin             = SpinRate
-  Extension        = Extension
-  Launch angle     = LaunchAngle
-
-YOUR JOB:
-1. Read the user's question in plain baseball language and translate it using the guide above.
-2. ALWAYS use a pre-built lib_ function if one covers the question — they are tested and accurate.
-3. Store the answer in `result` (string). Set `fig = None` unless making a chart.
-4. For chart functions: `result, fig = lib_xyz(df, ...)`
-5. Only write custom pandas if truly no lib_ function fits.
-
-ALWAYS respond in this exact format:
-ANSWER: <plain English answer a coach would understand>
+FORMAT:
+ANSWER: <plain English>
 CODE:
 ```python
 result = lib_pitcher_avg_velo(df, "Smith", "fastball")
 fig = None
-```
-
-RULES:
-- Pass names as the user typed them — fuzzy matching resolves "John Smith" to "Smith, John" and "Sacred Heart" to "Sacred Heart Pioneers" automatically
-- Pitch type aliases: fastball/heater/gas/cheese, slider/sweeper, curve/hook/bender/breaking ball, changeup/change/offspeed/circle change, sinker/2-seam/two-seam, cutter/cut fastball
-- For charts: ALWAYS assign both result and fig like: result, fig = lib_location_chart(df, "Smith")
-- No imports needed — pd, np, plt already available
-- Never invent column names — only use the exact names listed above"""
+```"""
 
         messages = [
             {"role": m["role"], "content": m["content"]}
