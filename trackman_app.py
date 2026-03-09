@@ -1061,9 +1061,34 @@ def _find_batter(df, name):
             return df[m]
     return df.iloc[0:0]
 
+def _resolve_team(df, name):
+    """Find the best matching full team name from partial input.
+    e.g. 'Sacred Heart' -> 'Sacred Heart Pioneers'
+    """
+    all_teams = sorted(set(df["HomeTeam"].dropna()) | set(df["AwayTeam"].dropna()))
+    nl = name.lower().strip()
+    # Exact match
+    for t in all_teams:
+        if t.lower() == nl:
+            return t
+    # All words match (e.g. "sacred heart" matches "Sacred Heart Pioneers")
+    words = [w for w in nl.split() if len(w) > 2]
+    matches = [t for t in all_teams if all(w in t.lower() for w in words)]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        return sorted(matches, key=len)[0]
+    # Any single long word match (fallback)
+    for w in sorted(words, key=len, reverse=True):
+        matches = [t for t in all_teams if w in t.lower()]
+        if matches:
+            return sorted(matches, key=len)[0]
+    return name
+
 def _find_team(df, name):
     """Return all pitches THROWN BY a team (home team pitching Top, away team pitching Bottom)."""
-    nl = name.lower()
+    full = _resolve_team(df, name)
+    nl = full.lower()
     hm = df["HomeTeam"].str.lower().str.contains(nl, na=False)
     aw = df["AwayTeam"].str.lower().str.contains(nl, na=False)
     return pd.concat([
@@ -1073,7 +1098,8 @@ def _find_team(df, name):
 
 def _find_team_batting(df, name):
     """Return all plate appearances WHERE a team was BATTING."""
-    nl = name.lower()
+    full = _resolve_team(df, name)
+    nl = full.lower()
     hm = df["HomeTeam"].str.lower().str.contains(nl, na=False)
     aw = df["AwayTeam"].str.lower().str.contains(nl, na=False)
     return pd.concat([
@@ -2554,6 +2580,7 @@ fig = None
 
 RULES:
 - Pitcher names: fuzzy matching handles "John Smith" → finds "Smith, John" automatically
+- Team names: fuzzy matching handles partial names — "Sacred Heart" finds "Sacred Heart Pioneers", "Marist" finds "Marist Red Foxes" etc. Pass team names exactly as the user typed them.
 - Pitch type aliases: fastball/fb, slider/sl, curveball/curve, changeup/change, sinker, cutter, sweeper, splitter
 - For charts: result, fig = lib_xyz(df, ...) — both must be assigned
 - No file I/O, no new imports (pd, np, plt already available)
