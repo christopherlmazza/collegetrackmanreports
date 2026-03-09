@@ -2124,6 +2124,21 @@ def lib_team_hard_hit(df, team):
     hh = (ev>=95).sum()
     return f"{team} hard hit% allowed (95+ mph): {_fmt(_pct(hh,len(ev)),'%')} ({hh}/{len(ev)})"
 
+def lib_team_max_pitch_velo(df, team, pitch_type=None):
+    """Hardest pitch thrown by any pitcher on a team."""
+    s = _fp(_find_team(df, team), pitch_type)
+    if s.empty: return "Team not found."
+    v = s["RelSpeed"].dropna()
+    if v.empty: return "No velocity data."
+    idx = s["RelSpeed"].idxmax()
+    row = s.loc[idx]
+    full_team = _resolve_team(df, team)
+    return (f"Hardest pitch thrown by a {full_team} pitcher: {row['RelSpeed']:.1f} mph\n"
+            f"  Pitcher: {row['Pitcher']}\n"
+            f"  Pitch type: {row['PitchType']}\n"
+            f"  Date: {row['GameDate']}\n"
+            f"  Opponent: {row['AwayTeam'] if row['TopBottom']=='Top' else row['HomeTeam']}")
+
 def lib_team_max_exit_velo(df, team):
     """Max exit velocity by any batter FROM a team (as hitters)."""
     s = _find_team_batting(df, team)
@@ -2342,6 +2357,7 @@ _AI_FUNCTIONS = {
     "lib_batter_k_bb":           lib_batter_k_bb,
     "lib_team_batting_summary":  lib_team_batting_summary,
     "lib_team_hard_hit":         lib_team_hard_hit,
+    "lib_team_max_pitch_velo":   lib_team_max_pitch_velo,
     "lib_team_max_exit_velo":    lib_team_max_exit_velo,
     "lib_team_exit_velo_leaders":lib_team_exit_velo_leaders,
     # TRENDS / CHARTS
@@ -2361,7 +2377,7 @@ ZONE/CHASE/LOCATION: lib_pitcher_zone_pct | lib_pitcher_zone_by_pitch | lib_pitc
 PITCH MIX: lib_pitcher_pitch_mix | lib_pitcher_mix_vs_hand | lib_pitcher_mix_by_count | lib_pitcher_mix_by_inning | lib_pitch_mix_chart(fig) | lib_team_pitch_mix
 OUTCOMES: lib_pitcher_k_pct | lib_pitcher_bb_pct | lib_pitcher_k_bb | lib_pitcher_ip | lib_pitcher_hits | lib_pitcher_hr | lib_pitcher_hbp | lib_pitcher_xwoba | lib_pitcher_xwoba_by_pitch | lib_pitcher_hard_hit | lib_pitcher_gb_fb | lib_pitcher_full_summary
 SPLITS: lib_pitcher_hand_splits | lib_pitcher_count_splits | lib_pitcher_risp_splits | lib_pitcher_outing_log
-TEAM: lib_team_summary | lib_team_walks | lib_team_strikeouts | lib_team_ip | lib_team_leaderboard(df,team,stat) | lib_all_teams_leaderboard(df,stat) | lib_conference_leaderboard_pitchers(df,stat) | lib_team_batting_summary | lib_team_hard_hit
+TEAM: lib_team_max_pitch_velo(df,team,pitch_type) | lib_team_summary | lib_team_walks | lib_team_strikeouts | lib_team_ip | lib_team_leaderboard(df,team,stat) | lib_all_teams_leaderboard(df,stat) | lib_conference_leaderboard_pitchers(df,stat) | lib_team_batting_summary | lib_team_hard_hit
 BATTER: lib_batter_exit_velo | lib_batter_launch_angle | lib_batter_whiff_pct | lib_batter_chase_pct | lib_batter_k_bb | lib_team_max_exit_velo(df,team) | lib_team_exit_velo_leaders(df,team,n)
 TRENDS: lib_pitcher_outing_chart(df,pitcher,stat) stat=velo/whiff/zone/chase/csw
 COMPARE: lib_compare_pitchers(df,p1,p2,stat) | lib_compare_pitchers_full(df,p1,p2)
@@ -2511,6 +2527,7 @@ LANGUAGE GUIDE (translate these terms automatically):
 - "throws strikes / command / control" = lib_pitcher_zone_pct or lib_pitcher_strike_pct
 - "walks / free passes" = lib_pitcher_bb_pct
 - "strikeouts / Ks / punchouts" = lib_pitcher_k_pct
+- "hardest pitch thrown by [team] / fastest pitch by [team] / top velo from [team]" = lib_team_max_pitch_velo(df, team)
 - "hardest hit by [team] hitters / top exit velo from [team] / hardest ball hit by [team]" = lib_team_max_exit_velo(df, team)
 - "exit velo leaders / who hits it hardest on [team]" = lib_team_exit_velo_leaders(df, team)
 - "vs lefties/righties / splits" = lib_pitcher_hand_splits
@@ -2596,14 +2613,15 @@ fig = None
                 else:
                     if fig:
                         st.pyplot(fig)
-                    final_answer = str(result) if result else (answer_text if answer_text else "No data found.")
+                    # ALWAYS use result from code execution — never the AI's ANSWER text which may hallucinate
+                    final_answer = str(result) if result else "No data found."
                     st.markdown(final_answer)
             else:
                 st.markdown(answer_text if answer_text else "I wasn't able to answer that. Try rephrasing.")
 
             st.session_state["chat_history"].append({
                 "role": "assistant",
-                "content": str(result) if (code_str and result) else answer_text,
+                "content": str(result) if (code_str and result) else (answer_text or "No data found."),
                 "fig": fig,
             })
 
