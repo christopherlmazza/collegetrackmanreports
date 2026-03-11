@@ -309,7 +309,11 @@ def draw_release(ax, data, pts):
     for sp in ax.spines.values(): sp.set_color(GRID_COLOR)
     if not all_rs.empty and not all_rh.empty:
         rs_c, rh_c = all_rs.mean(), all_rh.mean()
-        pad = max(all_rs.std(), all_rh.std(), 0.3) * 4 + 0.3
+        rs_std = all_rs.std() if len(all_rs) > 1 else 0.3
+        rh_std = all_rh.std() if len(all_rh) > 1 else 0.3
+        rs_std = rs_std if (rs_std == rs_std) else 0.3  # NaN check
+        rh_std = rh_std if (rh_std == rh_std) else 0.3  # NaN check
+        pad = max(rs_std, rh_std, 0.3) * 4 + 0.3
         ax.set_xlim(rs_c - pad, rs_c + pad); ax.set_ylim(rh_c - pad, rh_c + pad)
     ax.set_aspect("equal")
 
@@ -1736,8 +1740,10 @@ def lib_pitch_mix_chart(df, pitcher):
         colors=[pc(pt) for pt in counts.index],
         autopct="%1.1f%%", startangle=90,
         wedgeprops={"edgecolor": "white", "linewidth":1.5})
-    for t in texts: t.set_color(TEXT_COLOR); t.set_fontsize(11)
-    for at in autotexts: at.set_color("white"); at.set_fontsize(10); at.set_fontweight("bold")
+    for t in texts:
+        t.set_color(TEXT_COLOR); t.set_fontsize(11)
+    for at in autotexts:
+        at.set_color("white"); at.set_fontsize(10); at.set_fontweight("bold")
     ax.set_title(f"Pitch Mix — {s['Pitcher'].iloc[0]}", fontsize=13, fontweight="bold", color=TEXT_COLOR)
     fig.tight_layout()
     return f"Pitch mix — {s['Pitcher'].iloc[0]}", fig
