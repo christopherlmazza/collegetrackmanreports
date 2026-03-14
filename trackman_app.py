@@ -3462,15 +3462,15 @@ if report_mode == "🏏 Hitters":
     bat_df["InZone"] = in_zone(bat_df)
 
     # PitcherThrows is often blank on batting rows — enrich from pitching rows
-    # which do have throwHand populated for the same pitchers
-    if bat_df["PitcherThrows"].str.strip().eq("").all():
-        _hand_lookup = (
-            df_all[df_all["PitcherThrows"].str.strip().ne("")]
-            .groupby("Pitcher")["PitcherThrows"]
-            .agg(lambda x: x.mode()[0] if not x.empty else "")
-            .to_dict()
-        )
-        bat_df["PitcherThrows"] = bat_df["Pitcher"].map(_hand_lookup).fillna("")
+    _all_throws = df_all["PitcherThrows"].dropna().unique().tolist()
+    _all_throws_nonempty = df_all[df_all["PitcherThrows"].str.strip().ne("") & df_all["PitcherThrows"].notna()]
+    _hand_lookup = (
+        _all_throws_nonempty
+        .groupby("Pitcher")["PitcherThrows"]
+        .agg(lambda x: x.mode()[0] if not x.empty else "")
+        .to_dict()
+    )
+    bat_df["PitcherThrows"] = bat_df["Pitcher"].map(_hand_lookup).fillna("")
 
     # Games summary
     games_h = (bat_df.groupby(["GameDate","HomeTeam","AwayTeam"])
@@ -3519,6 +3519,11 @@ if report_mode == "🏏 Hitters":
         st.warning("No data for this selection."); st.stop()
 
     # ── Tabs ──
+    _pt_vals = page_df["PitcherThrows"].dropna().unique().tolist() if "PitcherThrows" in page_df.columns else []
+    _pt_all = bat_df["PitcherThrows"].dropna().unique().tolist() if "PitcherThrows" in bat_df.columns else []
+    _pitcher_sample = page_df["Pitcher"].dropna().unique().tolist()[:5]
+    st.caption(f"DEBUG — page_df PitcherThrows: {_pt_vals} | bat_df PitcherThrows: {_pt_all} | pitchers: {_pitcher_sample}")
+
     tab_card, tab_heatmaps = st.tabs(["📄 Hitter Card", "🔥 Heatmaps"])
 
     with tab_card:
