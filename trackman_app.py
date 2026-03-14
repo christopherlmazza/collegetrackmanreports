@@ -1494,7 +1494,9 @@ def generate_hitter_heatmap(batter_df, metric="ev", pitch_type=None,
     if pitch_type:
         df = df[df["PitchType"] == pitch_type]
     if pitcher_hand:
-        df = df[df["PitcherThrows"] == pitcher_hand]
+        hand_map = {"L": "Left", "R": "Right", "Left": "Left", "Right": "Right"}
+        hand_val = hand_map.get(pitcher_hand, pitcher_hand)
+        df = df[df["PitcherThrows"] == hand_val]
     if count:
         if count == "2-strike":
             df = df[df["Strikes"] == 2]
@@ -1565,7 +1567,9 @@ def generate_hitter_heatmap(batter_df, metric="ev", pitch_type=None,
     # ── Build title components ──
     parts = []
     if pitch_type:   parts.append(pitch_type)
-    if pitcher_hand: parts.append(f"vs {'LHP' if pitcher_hand=='L' else 'RHP'}")
+    if pitcher_hand:
+        _ph_lbl = "LHP" if pitcher_hand in ("L","Left") else "RHP"
+        parts.append(f"vs {_ph_lbl}")
     if count:        parts.append(f"{count} count")
     filter_str = " · ".join(parts)
 
@@ -1575,14 +1579,12 @@ def generate_hitter_heatmap(batter_df, metric="ev", pitch_type=None,
 
     for idx, (side, label) in enumerate([("Left", "vs LHP"), ("Right", "vs RHP")]):
         ax = axes[idx]
-        ax.set_facecolor(PANEL_COLOR)
+        ax.set_facecolor("#FFFFFF")
 
-        if pitcher_hand:
-            # If filtered to one hand just show that panel fully, grey out other
-            side_data = df if pitcher_hand == side[0] else df.iloc[0:0]
-            label = f"vs {'LHP' if pitcher_hand=='L' else 'RHP'}" if pitcher_hand == side[0] else label
+        if "PitcherThrows" in df.columns:
+            side_data = df[df["PitcherThrows"] == side]
         else:
-            side_data = df[df["PitcherThrows"] == side] if "PitcherThrows" in df.columns else df
+            side_data = df
 
         # Strike zone box
         ax.add_patch(Rectangle((-0.95, 1.6), 1.9, 1.9,
@@ -1673,7 +1675,10 @@ def generate_hitter_page(batter_df, batter_name, game_date, opponent,
     filter_labels = []
 
     if filter_pitch_hand and "PitcherThrows" in heat_df.columns:
-        heat_df = heat_df[heat_df["PitcherThrows"] == filter_pitch_hand]
+        # PitcherThrows is "Left"/"Right" — handle both short and long form
+        hand_map = {"L": "Left", "R": "Right", "Left": "Left", "Right": "Right"}
+        hand_val = hand_map.get(filter_pitch_hand, filter_pitch_hand)
+        heat_df = heat_df[heat_df["PitcherThrows"] == hand_val]
         filter_labels.append(f"vs {'LHP' if filter_pitch_hand=='L' else 'RHP'}")
 
     if filter_pitch_type and "PitchType" in heat_df.columns:
@@ -1739,7 +1744,9 @@ def generate_hitter_page(batter_df, batter_name, game_date, opponent,
     draw_zone_heatmap(ax_whiff, batter_df, "whiff", f"Whiff%{filter_suffix}", heat_df)
     ax_spray = fig.add_subplot(gs[3, 2]); draw_spray_chart(ax_spray, bip)
 
-    gs_sub  = gs[3, 3].subgridspec(2, 1, hspace=0.65)
+    # Use nested gridspec for stacked BB profile + spray direction
+    from matplotlib.gridspec import GridSpecFromSubplotSpec
+    gs_sub = GridSpecFromSubplotSpec(2, 1, subplot_spec=gs[3, 3], hspace=0.65)
     ax_bb   = fig.add_subplot(gs_sub[0]); draw_batted_ball_profile(ax_bb, stats)
     ax_pull = fig.add_subplot(gs_sub[1]); draw_pull_oppo(ax_pull, stats)
 
