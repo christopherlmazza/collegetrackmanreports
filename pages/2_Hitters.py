@@ -1087,21 +1087,35 @@ def hitter_grade_color(stat_name, value, higher_is_better=True):
 # ── Spray angle estimation ────────────────────────────────────────────────────
 def estimate_spray_angle(row):
     """
-    Estimate spray angle from PlateLocSide + BatterSide.
-    Returns degrees: negative = pull side, 0 = center, positive = oppo side.
-    This is a heuristic — positive PlateLocSide = arm side of plate.
-    For RHB: arm side = inside = pull (left field)
-    For LHB: arm side = inside = pull (right field)
+    Estimate spray angle from PlateLocSide + HorzBreak + BatterSide.
+    Negative = pull (left for RHB, right for LHB)
+    0        = center field
+    Positive = oppo (right for RHB, left for LHB)
+
+    Logic: inside pitch → pull, outside pitch → oppo.
+    For RHB: inside = positive PlateLocSide → pull = negative angle
+    For LHB: inside = negative PlateLocSide → pull = negative angle
     """
-    loc = row.get("PlateLocSide", np.nan)
+    loc  = row.get("PlateLocSide", np.nan)
+    horz = row.get("HorzBreak", np.nan)
     side = str(row.get("BatterSide", "Right"))
     if pd.isna(loc): return np.nan
-    # Invert for LHB since field is mirrored
+
+    # Combine plate location with horizontal break for better estimate
+    # HorzBreak moves ball toward or away from batter
+    loc_signal = loc
+    if not pd.isna(horz):
+        # Weight plate location more than break
+        loc_signal = loc * 0.75 + (horz / 24.0) * 0.25
+
     if side == "Left":
-        angle = loc * 30    # positive = pull right for LHB
+        # For LHB: negative PlateLocSide = inside = pull (negative angle)
+        angle = loc_signal * -35
     else:
-        angle = -loc * 30   # negative = pull left for RHB
-    return float(np.clip(angle, -45, 45))
+        # For RHB: positive PlateLocSide = inside = pull (negative angle)
+        angle = loc_signal * -35
+
+    return float(np.clip(angle, -50, 50))
 
 def spray_direction(angle):
     """Classify spray angle into Pull / Center / Oppo."""
@@ -1178,7 +1192,7 @@ def compute_batter_stats(df):
 def _hax(ax):
     ax.set_facecolor("#FFFFFF")
     for sp in ax.spines.values(): sp.set_color("#CCCCCC")
-    ax.tick_params(colors=TEXT_COLOR, labelsize=7)
+    ax.tick_params(colors=TEXT_COLOR, labelsize=10)
     ax.xaxis.label.set_color(TEXT_COLOR)
     ax.yaxis.label.set_color(TEXT_COLOR)
     ax.title.set_color(TEXT_COLOR)
@@ -1196,12 +1210,12 @@ def draw_ev_la_scatter(ax, bip):
                     vmin=0, vmax=1.5, s=40, alpha=0.9, edgecolors="#333333", linewidths=0.5)
     ax.axvspan(8, 32, color=ACCENT_COLOR, alpha=0.06, label="Sweet spot")
     ax.axhline(95, color="#CC3333", lw=0.8, ls="--", alpha=0.6)
-    ax.set_xlabel("Launch Angle (°)", fontsize=7)
-    ax.set_ylabel("Exit Velocity (mph)", fontsize=7)
-    ax.set_title("EV vs Launch Angle", fontsize=9, fontweight="bold", color=TEXT_COLOR)
+    ax.set_xlabel("Launch Angle (°)", fontsize=11)
+    ax.set_ylabel("Exit Velocity (mph)", fontsize=11)
+    ax.set_title("EV vs Launch Angle", fontsize=13, fontweight="bold", color=TEXT_COLOR)
     cb = plt.colorbar(sc, ax=ax, shrink=0.8)
-    cb.set_label("xwOBA", color=MUTED_TEXT, fontsize=7)
-    cb.ax.yaxis.set_tick_params(color=MUTED_TEXT, labelsize=6)
+    cb.set_label("xwOBA", color=MUTED_TEXT, fontsize=10)
+    cb.ax.yaxis.set_tick_params(color=MUTED_TEXT, labelsize=9)
 
 def draw_ev_distribution(ax, bip):
     """EV distribution with percentile markers."""
@@ -1218,11 +1232,11 @@ def draw_ev_distribution(ax, bip):
         val = np.percentile(ev, p)
         ax.axvline(val, color=col, lw=2.0, ls="--")
         ax.text(val + 0.5, ymax * 0.88, f"{lbl}\n{val:.1f}", color=col,
-                fontsize=7, va="top", fontweight="bold",
+                fontsize=10, va="top", fontweight="bold",
                 bbox=dict(boxstyle="round,pad=0.2", fc="white", ec=col, alpha=0.85, lw=0.8))
-    ax.set_xlabel("Exit Velocity (mph)", fontsize=7)
-    ax.set_ylabel("Count", fontsize=7)
-    ax.set_title("EV Distribution", fontsize=9, fontweight="bold", color=TEXT_COLOR)
+    ax.set_xlabel("Exit Velocity (mph)", fontsize=11)
+    ax.set_ylabel("Count", fontsize=11)
+    ax.set_title("EV Distribution", fontsize=13, fontweight="bold", color=TEXT_COLOR)
 
 def _zone_grid(df, stat):
     """Build 6x6 heatmap grid. Min 1 pitch per cell — show all data we have."""
@@ -1301,16 +1315,16 @@ def draw_zone_heatmap(ax, df, stat="ev", title="EV Heatmap", filter_df=None):
                 # More aggressive contrast: dark text on light/mid cells, white on dark
                 txt_col = "black" if norm_v < 0.6 else "white"
                 ax.text(x_bins[j] + 0.25, y_bins[i] + 0.25, fmt,
-                        ha="center", va="center", fontsize=7,
+                        ha="center", va="center", fontsize=11,
                         color=txt_col, fontweight="bold",
                         bbox=dict(boxstyle="round,pad=0.1", fc="none", ec="none"))
 
     ax.set_xlim(-1.5, 1.5); ax.set_ylim(1.0, 4.0)
-    ax.set_xlabel("Plate Side (ft)", fontsize=7)
-    ax.set_ylabel("Height (ft)", fontsize=7)
-    ax.set_title(title, fontsize=9, fontweight="bold", color=TEXT_COLOR)
+    ax.set_xlabel("Plate Side (ft)", fontsize=11)
+    ax.set_ylabel("Height (ft)", fontsize=11)
+    ax.set_title(title, fontsize=13, fontweight="bold", color=TEXT_COLOR)
     cb = plt.colorbar(im, ax=ax, shrink=0.8)
-    cb.ax.yaxis.set_tick_params(color=TEXT_COLOR, labelsize=6)
+    cb.ax.yaxis.set_tick_params(color=TEXT_COLOR, labelsize=9)
     plt.setp(plt.getp(cb.ax.axes, 'yticklabels'), color=TEXT_COLOR)
 
 def draw_swing_zones(ax, df):
@@ -1372,7 +1386,9 @@ def draw_spray_chart(ax, bip):
     for _, row in valid.iterrows():
         ang  = float(row["spray_angle"])   # degrees: neg=left, 0=center, pos=right
         ev   = float(row["ExitSpeed"])
-        dist = min(max(ev * 2.5, 60), 310)
+        # More realistic distance scaling: 
+        # ~60ft minimum (weak contact), scales up to ~350ft for 110mph
+        dist = min(max((ev - 50) * 3.5 + 60, 60), 350)
 
         # FIXED: x = lateral (sin), y = depth (cos)
         ang_rad = np.radians(ang)
@@ -1395,12 +1411,12 @@ def draw_spray_chart(ax, bip):
     ax.set_aspect("equal")
     hand_lbl = "LHB" if batter_side == "Left" else "RHB"
     ax.set_title(f"Spray Chart (est.) — {hand_lbl}",
-                 fontsize=9, fontweight="bold", color=TEXT_COLOR, pad=6)
+                 fontsize=13, fontweight="bold", color=TEXT_COLOR, pad=6)
     ax.axis("off")
 
     for col, lbl in [("#FF4444", "XBH"), ("#44FF88", "Single"), ("#8888AA", "Out")]:
         ax.scatter([], [], c=col, s=25, label=lbl, edgecolors="white", linewidths=0.4)
-    ax.legend(fontsize=7, frameon=False, labelcolor=TEXT_COLOR,
+    ax.legend(fontsize=10, frameon=False, labelcolor=TEXT_COLOR,
               loc="lower center", ncol=3, bbox_to_anchor=(0.5, -0.02))
 
 def draw_batted_ball_profile(ax, stats):
@@ -1410,10 +1426,10 @@ def draw_batted_ball_profile(ax, stats):
     values = [stats.get("gb_pct") or 0, stats.get("ld_pct") or 0, stats.get("fb_pct") or 0]
     colors = ["#4488FF", "#44FF88", "#FF6644"]
     bars = ax.bar(labels, values, color=colors, edgecolor="white", lw=0.8)
-    ax.bar_label(bars, fmt="%.1f%%", fontsize=8, color="#111111", padding=3, fontweight="bold")
+    ax.bar_label(bars, fmt="%.1f%%", fontsize=11, color="#111111", padding=4, fontweight="bold")
     ax.set_ylim(0, max(max(values) * 1.35, 10))
-    ax.set_ylabel("%", fontsize=7, color="#111111")
-    ax.set_title("Batted Ball Profile", fontsize=9, fontweight="bold", color=TEXT_COLOR)
+    ax.set_ylabel("%", fontsize=11, color="#111111")
+    ax.set_title("Batted Ball Profile", fontsize=13, fontweight="bold", color=TEXT_COLOR)
 
 def draw_pull_oppo(ax, stats):
     """Pull / Center / Oppo bar chart."""
@@ -1422,10 +1438,10 @@ def draw_pull_oppo(ax, stats):
     values = [stats.get("pull_pct") or 0, stats.get("center_pct") or 0, stats.get("oppo_pct") or 0]
     colors = ["#E84040", "#F0B800", "#3399EE"]
     bars = ax.bar(labels, values, color=colors, edgecolor="white", lw=0.8)
-    ax.bar_label(bars, fmt="%.1f%%", fontsize=8, color="#111111", padding=3, fontweight="bold")
+    ax.bar_label(bars, fmt="%.1f%%", fontsize=11, color="#111111", padding=4, fontweight="bold")
     ax.set_ylim(0, max(max(values) * 1.35, 10))
-    ax.set_ylabel("%", fontsize=7, color="#111111")
-    ax.set_title("Spray Direction", fontsize=9, fontweight="bold", color=TEXT_COLOR)
+    ax.set_ylabel("%", fontsize=11, color="#111111")
+    ax.set_title("Spray Direction", fontsize=13, fontweight="bold", color=TEXT_COLOR)
 
 # ── Stats banner ──────────────────────────────────────────────────────────────
 def draw_hitter_stats_banner(ax, stats, batter_name):
@@ -1485,16 +1501,16 @@ def draw_hitter_stats_banner(ax, stats, batter_name):
         # Label — slightly muted version of contrast color
         label_col = t_col if missing else t_col
         ax.text(x, 0.76, label, transform=ax.transAxes,
-                ha="center", va="center", fontsize=7,
+                ha="center", va="center", fontsize=9,
                 color=label_col, fontweight="bold", zorder=3, alpha=0.75)
         # Value — full contrast
         ax.text(x, 0.44, disp, transform=ax.transAxes,
-                ha="center", va="center", fontsize=11,
+                ha="center", va="center", fontsize=14,
                 color=t_col, fontweight="bold", zorder=3)
         # Percentile
         if p_txt:
             ax.text(x, 0.13, p_txt, transform=ax.transAxes,
-                    ha="center", va="center", fontsize=6.5,
+                    ha="center", va="center", fontsize=9,
                     color=t_col, alpha=0.80, zorder=3)
 
 
@@ -1708,17 +1724,17 @@ def generate_hitter_page(batter_df, batter_name, game_date, opponent,
 
     filter_suffix = f" ({', '.join(filter_labels)})" if filter_labels else ""
 
-    fig = plt.figure(figsize=(20, 14), facecolor=BG_COLOR)
+    fig = plt.figure(figsize=(24, 20), facecolor=BG_COLOR)
     gs  = fig.add_gridspec(4, 4,
-                            height_ratios=[0.10, 0.15, 1.0, 1.0],
-                            hspace=0.48, wspace=0.35,
+                            height_ratios=[0.08, 0.13, 1.0, 1.0],
+                            hspace=0.52, wspace=0.38,
                             left=0.04, right=0.97, top=0.96, bottom=0.04)
 
     # ── Title bar ──
     ax_title = fig.add_subplot(gs[0, :])
     ax_title.set_facecolor(BG_COLOR); ax_title.axis("off")
     ax_title.text(0.01, 0.65, batter_name,
-                  transform=ax_title.transAxes, fontsize=26, fontweight="bold",
+                  transform=ax_title.transAxes, fontsize=32, fontweight="bold",
                   color=TEXT_COLOR, va="center")
     side     = batter_df["BatterSide"].mode()[0] if not batter_df["BatterSide"].empty else "?"
     hand_lbl = "LHB" if side == "Left" else "RHB" if side == "Right" else side
@@ -1726,7 +1742,7 @@ def generate_hitter_page(batter_df, batter_name, game_date, opponent,
     if filter_suffix:
         info += f"  ·  Heatmaps filtered{filter_suffix}"
     ax_title.text(0.01, 0.12, info, transform=ax_title.transAxes,
-                  fontsize=10, color=MUTED_TEXT, va="center")
+                  fontsize=13, color=MUTED_TEXT, va="center")
 
     # ── Stats banner (always uses full unfiltered data) ──
     ax_banner = fig.add_subplot(gs[1, :])
@@ -2397,7 +2413,7 @@ def lib_location_chart(df, pitcher, pitch_type=None, batter_side=None):
     if pitch_type: title += f" ({pitch_type})"
     if batter_side: title += f" vs {'LHB' if batter_side[0].lower()=='l' else 'RHB'}"
     ax.set_title(title, fontweight="bold")
-    ax.legend(fontsize=7, frameon=False, labelcolor=TEXT_COLOR, loc="upper right")
+    ax.legend(fontsize=10, frameon=False, labelcolor=TEXT_COLOR, loc="upper right")
     fig.tight_layout()
     return title, fig
 
