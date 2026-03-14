@@ -1476,27 +1476,22 @@ def draw_hitter_stats_banner(ax, stats, batter_name):
                     color=t_col, alpha=0.80, zorder=3)
 
 
-# ── Standalone hitter heatmap (mirrors pitcher generate_heatmap) ──────────────
+# ── Standalone hitter heatmap ─────────────────────────────────────────────────
 def generate_hitter_heatmap(batter_df, metric="ev", pitch_type=None,
                              pitcher_hand=None, count=None):
     """
-    Generate a KDE-smoothed heatmap for a hitter split by pitch location.
-    Mirrors the pitcher generate_heatmap style exactly.
-
-    metric: "ev" | "xwoba" | "whiff" | "swing" | "location"
-    All other args are filters applied before plotting.
+    KDE-smoothed single-panel hitter zone heatmap.
+    PitcherThrows is blank in the parquet so no LHP/RHP split —
+    show one combined panel. Filters: pitch_type, pitcher_hand, count.
     """
     SWING_CALLS = {"StrikeSwinging", "FoulBall", "FoulBallNotFieldable", "InPlay"}
 
     df = batter_df.copy()
+    df = df[df["PlateLocSide"].notna() & df["PlateLocHeight"].notna()]
 
-    # ── Apply filters ──
+    # ── Filters ──
     if pitch_type:
         df = df[df["PitchType"] == pitch_type]
-    if pitcher_hand:
-        hand_map = {"L": "Left", "R": "Right", "Left": "Left", "Right": "Right"}
-        hand_val = hand_map.get(pitcher_hand, pitcher_hand)
-        df = df[df["PitcherThrows"] == hand_val]
     if count:
         if count == "2-strike":
             df = df[df["Strikes"] == 2]
@@ -1511,151 +1506,135 @@ def generate_hitter_heatmap(batter_df, metric="ev", pitch_type=None,
             except Exception:
                 pass
 
-    df = df[df["PlateLocSide"].notna() & df["PlateLocHeight"].notna()]
     if len(df) < 3:
         return None
 
-    # ── Compute metric value per pitch ──
-    is_density_only = False
-
+    # ── Metric setup ──
+    is_density = False
     if metric == "location":
-        is_density_only = True
-        cmap_name  = "YlOrRd"
+        is_density  = True
+        cmap_name   = "YlOrRd"
         title_label = "Pitch Location Density"
-        vmin, vmax = 0, 1
+        vmin, vmax  = 0, 1
+        plot_df     = df
 
     elif metric == "ev":
-        bip = df[df["PitchCall"] == "InPlay"].copy()
-        bip = bip[bip["ExitSpeed"].notna()]
-        if len(bip) < 3: return None
-        df = bip
-        df["_val"] = df["ExitSpeed"]
-        cmap_name  = "RdYlGn"
+        plot_df = df[(df["PitchCall"] == "InPlay") & df["ExitSpeed"].notna()].copy()
+        plot_df["_val"] = plot_df["ExitSpeed"]
+        cmap_name   = "RdYlGn_r"   # red=hard, green=soft — flipped so RED = danger
         title_label = "Exit Velocity (mph)"
-        vmin, vmax = 65, 105
+        vmin, vmax  = 65, 105
 
     elif metric == "xwoba":
-        df["xwOBA_val"] = df.apply(
+        df["_val"] = df.apply(
             lambda r: calc_xwoba(r["ExitSpeed"], r["LaunchAngle"])
             if r["PitchCall"] == "InPlay" else (
-                0.0 if r["PitchCall"] == "StrikeSwinging" else
-                0.05 if r["PitchCall"] == "StrikeCalled" else np.nan), axis=1)
-        df = df[df["xwOBA_val"].notna()]
-        if len(df) < 3: return None
-        df["_val"] = df["xwOBA_val"]
-        cmap_name  = "RdYlGn"
+                0.0  if r["PitchCall"] == "StrikeSwinging" else
+                0.05 if r["PitchCall"] == "StrikeCalled"   else np.nan), axis=1)
+        plot_df   = df[df["_val"].notna()].copy()
+        cmap_name   = "RdYlGn_r"
         title_label = "xwOBA"
-        vmin, vmax = 0.0, 1.2
+        vmin, vmax  = 0.0, 1.2
 
     elif metric == "whiff":
-        df["_val"] = (df["PitchCall"] == "StrikeSwinging").astype(float)
-        df = df[df["PitchCall"].isin(SWING_CALLS)]
-        if len(df) < 3: return None
-        cmap_name  = "RdYlGn_r"
+        plot_df = df[df["PitchCall"].isin(SWING_CALLS)].copy()
+        plot_df["_val"] = (plot_df["PitchCall"] == "StrikeSwinging").astype(float)
+        cmap_name   = "RdYlGn"    # green=whiff (bad for hitter), red=contact
         title_label = "Whiff Rate"
-        vmin, vmax = 0, 0.6
+        vmin, vmax  = 0, 0.6
 
     elif metric == "swing":
-        df["_val"] = df["PitchCall"].isin(SWING_CALLS).astype(float)
-        cmap_name  = "RdYlGn"
+        plot_df = df.copy()
+        plot_df["_val"] = plot_df["PitchCall"].isin(SWING_CALLS).astype(float)
+        cmap_name   = "RdYlGn"
         title_label = "Swing Rate"
-        vmin, vmax = 0, 1.0
-
+        vmin, vmax  = 0, 1.0
     else:
         return None
 
-    # ── Build title components ──
+    if len(plot_df) < 3:
+        return None
+
+    # ── Title ──
+    batter_name = plot_df["Batter"].iloc[0] if "Batter" in plot_df.columns else "Batter"
+    batter_side = plot_df["BatterSide"].mode()[0] if "BatterSide" in plot_df.columns else "?"
+    hand_lbl    = "LHB" if batter_side == "Left" else "RHB" if batter_side == "Right" else batter_side
+
     parts = []
-    if pitch_type:   parts.append(pitch_type)
-    if pitcher_hand:
-        _ph_lbl = "LHP" if pitcher_hand in ("L","Left") else "RHP"
-        parts.append(f"vs {_ph_lbl}")
-    if count:        parts.append(f"{count} count")
-    filter_str = " · ".join(parts)
+    if pitch_type: parts.append(pitch_type)
+    if count:      parts.append(f"{count} count")
+    filter_str = "  ·  " + "  ·  ".join(parts) if parts else ""
 
-    batter_name = df["Batter"].iloc[0] if "Batter" in df.columns else "Batter"
+    date_range = f"{batter_df['GameDate'].min()} – {batter_df['GameDate'].max()}"
 
-    fig, axes = plt.subplots(1, 2, figsize=(12, 6), facecolor=BG_COLOR)
+    # ── Plot ──
+    fig, ax = plt.subplots(1, 1, figsize=(8, 8), facecolor=BG_COLOR)
+    ax.set_facecolor(PANEL_COLOR)
 
-    for idx, (side, label) in enumerate([("Left", "vs LHP"), ("Right", "vs RHP")]):
-        ax = axes[idx]
-        ax.set_facecolor("#FFFFFF")
+    # Strike zone
+    ax.add_patch(Rectangle((-0.95, 1.6), 1.9, 1.9,
+                            fill=False, ec="#333333", lw=2.0, zorder=10))
+    # Zone thirds
+    for yline in [2.167, 2.833]:
+        ax.plot([-0.95, 0.95], [yline, yline],
+                color="#333333", lw=0.5, ls="--", alpha=0.5, zorder=9)
+    # Home plate
+    ax.add_patch(Polygon([(-.708,.15),(.708,.15),(.708,.35),(0,.55),(-.708,.35)],
+                         closed=True, fc="#CCCCCC", ec="#333333", lw=.8,
+                         alpha=0.7, zorder=10))
 
-        if "PitcherThrows" in df.columns:
-            # Handle both "Left"/"Right" and "L"/"R" values
-            short = side[0]  # "L" or "R"
-            side_data = df[df["PitcherThrows"].isin([side, short])]
+    x = plot_df["PlateLocSide"].values
+    y = plot_df["PlateLocHeight"].values
+    xi = np.linspace(-2.5, 2.5, 100)
+    yi = np.linspace(-0.5, 5.0, 100)
+    Xi, Yi = np.meshgrid(xi, yi)
+
+    try:
+        positions = np.vstack([x, y])
+        kde = gaussian_kde(positions, bw_method=0.35)
+        density = kde(np.vstack([Xi.ravel(), Yi.ravel()])).reshape(Xi.shape)
+
+        if is_density:
+            Zi = density / density.max() if density.max() > 0 else density
+            Zi[Zi < 0.05] = np.nan
         else:
-            side_data = df
+            vals = plot_df["_val"].values
+            Zi = np.zeros_like(Xi)
+            W  = np.zeros_like(Xi)
+            for px, py, pv in zip(x, y, vals):
+                dist2   = (Xi - px)**2 + (Yi - py)**2
+                weights = np.exp(-dist2 / (2 * 0.3**2))
+                Zi += weights * pv
+                W  += weights
+            W[W == 0] = 1
+            Zi = Zi / W
+            Zi[density < density.max() * 0.04] = np.nan
 
-        # Strike zone box
-        ax.add_patch(Rectangle((-0.95, 1.6), 1.9, 1.9,
-                                fill=False, ec="white", lw=1.5, zorder=10))
-        # Home plate
-        ax.add_patch(Polygon([(-.708,.15),(.708,.15),(.708,.35),(0,.55),(-.708,.35)],
-                             closed=True, fc="#CCCCCC", ec="black", lw=.5, alpha=0.5, zorder=10))
+        im = ax.pcolormesh(Xi, Yi, Zi, cmap=cmap_name,
+                           vmin=vmin, vmax=vmax, shading="gouraud", zorder=1)
+        cb = fig.colorbar(im, ax=ax, shrink=0.75, pad=0.02)
+        cb.set_label(title_label, fontsize=10, color=TEXT_COLOR)
+        cb.ax.tick_params(labelsize=8, colors=TEXT_COLOR)
+        plt.setp(plt.getp(cb.ax.axes, "yticklabels"), color=TEXT_COLOR)
 
-        if len(side_data) >= 3:
-            x = side_data["PlateLocSide"].values
-            y = side_data["PlateLocHeight"].values
-            xi = np.linspace(-2.5, 2.5, 80)
-            yi = np.linspace(-0.5, 5.0, 80)
-            Xi, Yi = np.meshgrid(xi, yi)
+    except Exception as e:
+        ax.text(0.5, 0.5, f"KDE failed:\n{e}", transform=ax.transAxes,
+                ha="center", va="center", color="red")
 
-            try:
-                positions = np.vstack([x, y])
-                kde = gaussian_kde(positions, bw_method=0.4)
-                density = kde(np.vstack([Xi.ravel(), Yi.ravel()])).reshape(Xi.shape)
+    ax.scatter(x, y, c="#333333", s=10, alpha=0.35, zorder=6)
 
-                if is_density_only:
-                    Zi = density / density.max() if density.max() > 0 else density
-                    Zi[Zi < 0.05] = np.nan
-                else:
-                    vals = side_data["_val"].values
-                    Zi = np.zeros_like(Xi)
-                    W  = np.zeros_like(Xi)
-                    for px, py, pv in zip(x, y, vals):
-                        dist2   = (Xi - px)**2 + (Yi - py)**2
-                        weights = np.exp(-dist2 / (2 * 0.3**2))
-                        Zi += weights * pv
-                        W  += weights
-                    W[W == 0] = 1
-                    Zi = Zi / W
-                    density_thresh = density.max() * 0.05
-                    Zi[density < density_thresh] = np.nan
+    ax.set_xlim(-2.5, 2.5)
+    ax.set_ylim(-0.5, 5.0)
+    ax.set_xlabel("Plate Side (ft)  ←  Arm Side | Glove Side  →",
+                  fontsize=10, color=TEXT_COLOR)
+    ax.set_ylabel("Plate Height (ft)", fontsize=10, color=TEXT_COLOR)
+    ax.tick_params(colors=TEXT_COLOR, labelsize=9)
+    for sp in ax.spines.values(): sp.set_color(GRID_COLOR)
 
-                ax.pcolormesh(Xi, Yi, Zi, cmap=cmap_name,
-                              vmin=vmin, vmax=vmax,
-                              shading="gouraud", zorder=1)
-            except Exception:
-                pass
-
-            ax.scatter(x, y, c="black", s=8, alpha=0.4, zorder=6)
-
-        n_side = len(side_data)
-        ax.set_title(f"{label} (n={n_side})", fontsize=11,
-                     fontweight="bold", color=TEXT_COLOR, pad=8)
-        ax.set_xlim(-2.5, 2.5); ax.set_ylim(-0.5, 5.0)
-        ax.set_xlabel("Plate Side (ft)", fontsize=8, color=MUTED_TEXT)
-        if idx == 0:
-            ax.set_ylabel("Plate Height (ft)", fontsize=8, color=MUTED_TEXT)
-        ax.tick_params(labelsize=7, colors=MUTED_TEXT)
-        for sp in ax.spines.values(): sp.set_color(GRID_COLOR)
-
-    fig.subplots_adjust(right=0.88)
-    cbar_ax = fig.add_axes([0.90, 0.15, 0.02, 0.7])
-    sm = plt.cm.ScalarMappable(cmap=cmap_name,
-                                norm=plt.Normalize(vmin=vmin, vmax=vmax))
-    sm.set_array([])
-    cbar = fig.colorbar(sm, cax=cbar_ax)
-    cbar.set_label(title_label, fontsize=9, color=TEXT_COLOR)
-    cbar.ax.tick_params(labelsize=7, colors=MUTED_TEXT)
-
-    main_title = f"{title_label} Heatmap — {batter_name}"
-    if filter_str:
-        main_title += f"  [{filter_str}]"
-    fig.suptitle(main_title, fontsize=14, fontweight="bold",
-                 color=TEXT_COLOR, y=0.98)
+    fig.suptitle(
+        f"{title_label} Heatmap\n{batter_name}  ·  {hand_lbl}  ·  n={len(plot_df)}{filter_str}  ·  {date_range}",
+        fontsize=13, fontweight="bold", color=TEXT_COLOR, y=0.99)
+    fig.tight_layout(rect=[0, 0, 1, 0.94])
     fig.patch.set_facecolor(BG_COLOR)
     return fig
 
@@ -3519,10 +3498,6 @@ if report_mode == "🏏 Hitters":
         st.warning("No data for this selection."); st.stop()
 
     # ── Tabs ──
-    _pt_vals = page_df["PitcherThrows"].dropna().unique().tolist() if "PitcherThrows" in page_df.columns else []
-    _pt_all = bat_df["PitcherThrows"].dropna().unique().tolist() if "PitcherThrows" in bat_df.columns else []
-    _pitcher_sample = page_df["Pitcher"].dropna().unique().tolist()[:5]
-    st.caption(f"DEBUG — page_df PitcherThrows: {_pt_vals} | bat_df PitcherThrows: {_pt_all} | pitchers: {_pitcher_sample}")
 
     tab_card, tab_heatmaps = st.tabs(["📄 Hitter Card", "🔥 Heatmaps"])
 
@@ -3586,11 +3561,9 @@ if report_mode == "🏏 Hitters":
             avail_hand = ["All"] + sorted([h for h in page_df["PitcherThrows"].dropna().unique() if h])
             hm_hand = st.selectbox("vs Pitcher Hand", avail_hand, key="hm_hand_hitter")
 
-        hm_col4, hm_col5 = st.columns([1, 2])
-        with hm_col4:
-            hm_cnt_opts = ["All","0-0","1-0","2-0","3-0","0-1","1-1","2-1","3-1",
-                           "0-2","1-2","2-2","3-2","2-strike","ahead","behind"]
-            hm_count = st.selectbox("Count", hm_cnt_opts, key="hm_count_hitter")
+        hm_cnt_opts = ["All","0-0","1-0","2-0","3-0","0-1","1-1","2-1","3-1",
+                       "0-2","1-2","2-2","3-2","2-strike","ahead","behind"]
+        hm_count = st.selectbox("Count", hm_cnt_opts, key="hm_count_hitter")
 
         metric_map = {
             "Exit Velocity":    "ev",
@@ -3606,10 +3579,9 @@ if report_mode == "🏏 Hitters":
                 try:
                     hmfig = generate_hitter_heatmap(
                         page_df,
-                        metric      = metric_map[hm_metric],
-                        pitch_type  = None if hm_pt   == "All" else hm_pt,
-                        pitcher_hand= None if hm_hand == "All" else hm_hand,
-                        count       = None if hm_count== "All" else hm_count,
+                        metric     = metric_map[hm_metric],
+                        pitch_type = None if hm_pt    == "All" else hm_pt,
+                        count      = None if hm_count == "All" else hm_count,
                     )
                     if hmfig:
                         st.pyplot(hmfig, use_container_width=True)
