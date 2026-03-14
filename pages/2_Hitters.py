@@ -1285,8 +1285,11 @@ def draw_zone_heatmap(ax, df, stat="ev", title="EV Heatmap", filter_df=None):
 
     im = ax.imshow(grid, extent=[-1.5, 1.5, 1.0, 4.0], origin="lower",
                    cmap=cmap, vmin=vmin, vmax=vmax, aspect="auto", alpha=0.88)
-    zone = plt.Rectangle((-0.83, 1.5), 1.66, 2.0, lw=1.5, ec="white", fc="none")
+    zone = plt.Rectangle((-0.83, 1.5), 1.66, 2.0, lw=2.0, ec="#222222", fc="none", zorder=5)
     ax.add_patch(zone)
+    # Home plate
+    ax.add_patch(Polygon([(-.708,.15),(.708,.15),(.708,.35),(0,.55),(-.708,.35)],
+                 closed=True, fc="#CCCCCC", ec="#333333", lw=.8, alpha=0.8, zorder=5))
 
     for i in range(6):
         for j in range(6):
