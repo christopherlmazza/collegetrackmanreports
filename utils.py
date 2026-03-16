@@ -54,7 +54,7 @@ GRADE_CMAP = LinearSegmentedColormap.from_list("grade", [
 @st.cache_data(ttl=3600)
 def load_percentiles():
     try:
-        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        base = os.path.dirname(os.path.abspath(__file__))
     except NameError:
         base = os.getcwd()
     paths = [
@@ -308,7 +308,7 @@ def draw_release(ax, data, pts):
 # ===========================================================================
 # DATA LOADING — reads from data/by_date/ partitioned parquets
 # ===========================================================================
-DATA_DIR    = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))) if "__file__" in dir() else os.getcwd(), "data")
+DATA_DIR    = os.path.join(os.path.dirname(os.path.abspath(__file__)) if "__file__" in dir() else os.getcwd(), "data")
 BY_DATE_DIR = os.path.join(DATA_DIR, "by_date")
 INDEX_PATH  = os.path.join(DATA_DIR, "index.parquet")
 
@@ -1079,7 +1079,7 @@ def parse_session_date(session, fallback_date):
 # ── Hitter percentiles ────────────────────────────────────────────────────────
 def load_hitter_percentiles():
     try:
-        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        base = os.path.dirname(os.path.abspath(__file__))
     except NameError:
         base = os.getcwd()
     paths = [
