@@ -417,18 +417,39 @@ def _write_timestamp():
 def _git_push():
     import subprocess
     repo_dir = os.path.dirname(os.path.abspath(__file__))
-    print("\n  Pushing data to GitHub...")
+    print(f"\n  Pushing data to GitHub from {repo_dir}...")
+
     cmds = [
         ["git", "add", "data/by_date/", "data/index.parquet", "data/last_updated.json"],
         ["git", "commit", "-m", f"data update {date.today()}"],
+        ["git", "pull", "--no-edit"],
         ["git", "push"],
     ]
     for cmd in cmds:
-        result = subprocess.run(cmd, cwd=repo_dir, capture_output=True, text=True)
+        print(f"  Running: {' '.join(cmd)}")
+        result = subprocess.run(cmd, cwd=repo_dir,
+                                capture_output=True, text=True)
+        out = result.stdout.strip()
+        err = result.stderr.strip()
+        if out: print(f"  stdout: {out}")
+        if err: print(f"  stderr: {err}")
         if result.returncode != 0:
-            if "nothing to commit" in result.stdout + result.stderr:
+            if "nothing to commit" in out + err:
                 print("  Nothing new to push."); return
-            print(f"  Git error: {result.stderr.strip()}"); return
+            if "Everything up-to-date" in out + err:
+                print("  Already up to date."); return
+            # Try pulling first then pushing
+            print("  Push failed, trying pull then push...")
+            pull = subprocess.run(["git", "pull", "--rebase"],
+                                   cwd=repo_dir, capture_output=True, text=True)
+            print(f"  pull: {pull.stdout.strip()} {pull.stderr.strip()}")
+            retry = subprocess.run(["git", "push"],
+                                    cwd=repo_dir, capture_output=True, text=True)
+            if retry.returncode == 0:
+                print("  Pushed to GitHub after pull.")
+            else:
+                print(f"  Push failed: {retry.stderr.strip()}")
+            return
     print("  Pushed to GitHub.")
 
 if __name__ == "__main__":
