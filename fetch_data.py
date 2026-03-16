@@ -2,63 +2,43 @@
 fetch_data.py
 =============
 Runs once daily to pull all 2026 D1 college baseball data from the
-TrackMan API and write it to data/pitches.parquet.
+TrackMan API and write it to partitioned parquet files.
 
-The Streamlit app (trackman_app.py) reads from that file and never
-touches the API directly.
+New storage layout:
+    data/
+        index.parquet          -- lightweight game index (date, teams, session ID)
+        by_date/
+            2026-02-13.parquet -- all pitches from that date
+            2026-02-14.parquet
+            ...
+        last_updated.json
 
-Setup (Windows Task Scheduler):
-  Program: python
-  Arguments: C:\\path\\to\\fetch_data.py
-  Trigger: Daily at 6:00 AM
-  Settings: Check "Wake the computer to run this task"
+On first run, automatically migrates existing data/pitches.parquet
+into the new by_date/ structure.
 
 Manual run:
-  python fetch_data.py
-
-Output:
-  data/pitches.parquet       — all pitches with metadata
-  data/sessions.parquet      — session/game metadata
-  data/last_updated.json     — timestamp of last successful run
+    python fetch_data.py
 """
 
 import requests, json, os, sys, time
 import pandas as pd
 import numpy as np
 from datetime import date, timedelta, datetime
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections import defaultdict
 
 # ===========================================================================
 # CREDENTIALS
 # ===========================================================================
-BASE_URL  = "https://dataapi.trackmanbaseball.com"
-TOKEN_URL = "https://login.trackman.com/connect/token"
+BASE_URL      = "https://dataapi.trackmanbaseball.com"
+TOKEN_URL     = "https://login.trackman.com/connect/token"
+CLIENT_ID     = "LongIslandUniversity-01"
+CLIENT_SECRET = "b272ec7f-2ea6-4040-92ea-673804d6fa46"
+SEASON_START  = date(2026, 2, 1)
 
-# Load credentials from .streamlit/secrets.toml (same file Streamlit uses)
-def _load_secrets():
-    secrets_path = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), ".streamlit", "secrets.toml"
-    )
-    if not os.path.exists(secrets_path):
-        print(f"ERROR: secrets.toml not found at {secrets_path}")
-        sys.exit(1)
-    try:
-        import tomllib          # Python 3.11+
-    except ImportError:
-        try:
-            import tomli as tomllib   # pip install tomli
-        except ImportError:
-            print("ERROR: Run:  pip install tomli")
-            sys.exit(1)
-    with open(secrets_path, "rb") as f:
-        return tomllib.load(f)
-
-_secrets  = _load_secrets()
-CLIENT_ID     = _secrets["CLIENT_ID"]
-CLIENT_SECRET = _secrets["CLIENT_SECRET"]
-
-SEASON_START  = date(2026, 2, 1)   # adjust each year
-DATA_DIR      = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+DATA_DIR    = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+BY_DATE_DIR = os.path.join(DATA_DIR, "by_date")
+INDEX_PATH  = os.path.join(DATA_DIR, "index.parquet")
+LEGACY_PATH = os.path.join(DATA_DIR, "pitches.parquet")
 
 # ===========================================================================
 # AUTH
@@ -69,15 +49,15 @@ def get_token():
     if time.time() < _token_cache["expires"] - 60:
         return _token_cache["token"]
     resp = requests.post(TOKEN_URL, data={
-        "grant_type": "client_credentials",
-        "client_id": CLIENT_ID,
+        "grant_type":    "client_credentials",
+        "client_id":     CLIENT_ID,
         "client_secret": CLIENT_SECRET,
     }, timeout=30)
     if resp.status_code != 200:
-        print(f"  Auth failed: {resp.status_code} — {resp.text[:200]}")
+        print(f"  Auth failed: {resp.status_code} -- {resp.text[:200]}")
         return None
     data = resp.json()
-    _token_cache["token"] = data["access_token"]
+    _token_cache["token"]   = data["access_token"]
     _token_cache["expires"] = time.time() + data.get("expires_in", 3600)
     return _token_cache["token"]
 
@@ -86,36 +66,32 @@ def get_headers():
     if not token: return None
     return {
         "Authorization": f"Bearer {token}",
-        "Accept": "application/json",
-        "Content-Type": "application/json",
+        "Accept":        "application/json",
+        "Content-Type":  "application/json",
     }
 
 # ===========================================================================
-# SAFE HELPERS
+# HELPERS
 # ===========================================================================
 def sg(d, *keys, default=None):
     for k in keys:
-        if isinstance(d, dict):
-            d = d.get(k, default)
-        else:
-            return default
+        if isinstance(d, dict): d = d.get(k, default)
+        else: return default
     return d
 
 def sf(v):
     if v is None: return np.nan
-    try: return float(v)
+    try:    return float(v)
     except: return np.nan
 
-# ===========================================================================
-# D1 FILTER
-# ===========================================================================
 def is_d1_session(s):
-    lv = s.get("level", "")
-    lv_text = " ".join(str(v) for v in lv.values()).upper() if isinstance(lv, dict) else str(lv).upper()
-    return any(kw in lv_text for kw in ["D1", "NCAA-D1", "DIVISION 1", "DIV1", "DIV-1"])
+    lv      = s.get("level", "")
+    lv_text = (" ".join(str(v) for v in lv.values()).upper()
+               if isinstance(lv, dict) else str(lv).upper())
+    return any(kw in lv_text for kw in ["D1","NCAA-D1","DIVISION 1","DIV1","DIV-1"])
 
 # ===========================================================================
-# API FETCHERS  (polite — 1.5s sleep, retries on failure)
+# API FETCHERS
 # ===========================================================================
 def fetch_sessions(date_from_str, date_to_str):
     for attempt in range(5):
@@ -124,20 +100,16 @@ def fetch_sessions(date_from_str, date_to_str):
         resp = requests.post(
             f"{BASE_URL}/api/v1/discovery/game/sessions",
             headers=headers,
-            json={"sessionType": "All", "utcDateFrom": date_from_str, "utcDateTo": date_to_str},
+            json={"sessionType":"All","utcDateFrom":date_from_str,"utcDateTo":date_to_str},
             timeout=60,
         )
         if resp.status_code == 429:
-            wait = int(resp.headers.get("Retry-After", 60 * (attempt + 1)))
-            print(f"  Rate limited, waiting {wait}s...")
-            time.sleep(wait)
-            continue
+            wait = int(resp.headers.get("Retry-After", 60*(attempt+1)))
+            print(f"  Rate limited, waiting {wait}s..."); time.sleep(wait); continue
         if not resp.ok:
-            print(f"  Session fetch failed: {resp.status_code} — {resp.text[:100]}")
-            return []
+            print(f"  Session fetch failed: {resp.status_code}"); return []
         data = resp.json()
         return data if isinstance(data, list) else data.get("sessions", [])
-    print("  Session fetch failed after 5 retries.")
     return []
 
 def fetch_game_data(session_id):
@@ -145,40 +117,31 @@ def fetch_game_data(session_id):
         try:
             headers = get_headers()
             if not headers: return [], []
-
-            resp = requests.get(
-                f"{BASE_URL}/api/v1/data/game/plays/{session_id}",
-                headers=headers, timeout=30,
-            )
-            if resp.status_code == 429:
-                wait = int(resp.headers.get("Retry-After", 30))
-                print(f"  Rate limited, waiting {wait}s...")
-                time.sleep(wait)
-                continue
-            if resp.status_code != 200: return [], []
-            plays = resp.json()
+            r = requests.get(f"{BASE_URL}/api/v1/data/game/plays/{session_id}",
+                             headers=headers, timeout=30)
+            if r.status_code == 429:
+                wait = int(r.headers.get("Retry-After", 30))
+                print(f"  Rate limited, waiting {wait}s..."); time.sleep(wait); continue
+            if r.status_code != 200: return [], []
+            plays = r.json()
             if not isinstance(plays, list): return [], []
-
-            resp = requests.get(
-                f"{BASE_URL}/api/v1/data/game/balls/{session_id}",
-                headers=headers, timeout=30,
-            )
-            if resp.status_code != 200: return plays, []
-            return plays, resp.json()
-
+            r = requests.get(f"{BASE_URL}/api/v1/data/game/balls/{session_id}",
+                             headers=headers, timeout=30)
+            if r.status_code != 200: return plays, []
+            return plays, r.json()
         except Exception as e:
-            wait = 15 * (attempt + 1)
+            wait = 15*(attempt+1)
             print(f"  Connection error (attempt {attempt+1}/4), retrying in {wait}s: {e}")
             time.sleep(wait)
     return [], []
 
 # ===========================================================================
-# DATA FLATTENING  (matches trackman_app.py exactly)
+# DATA FLATTENING
 # ===========================================================================
 def flatten_game(plays_raw, balls_raw, session):
-    ht = session.get("homeTeam", {}).get("name", "")
-    at = session.get("awayTeam", {}).get("name", "")
-    game_date = session.get("gameDateLocal", session.get("gameDateUtc", ""))[:10] if session.get("gameDateLocal") or session.get("gameDateUtc") else ""
+    ht         = session.get("homeTeam", {}).get("name", "")
+    at         = session.get("awayTeam", {}).get("name", "")
+    game_date  = (session.get("gameDateLocal") or session.get("gameDateUtc") or "")[:10]
     session_id = session.get("sessionId", "")
 
     rows = []
@@ -192,23 +155,23 @@ def flatten_game(plays_raw, balls_raw, session):
             "PitchNo":         sg(p, "taggerBehavior", "pitchNo"),
             "PAofInning":      sg(p, "taggerBehavior", "pAofinning"),
             "PitchofPA":       sg(p, "taggerBehavior", "pitchofPA"),
-            "Pitcher":         sg(p, "pitcher", "name", default=""),
-            "PitcherTeam":     sg(p, "pitcher", "team", default=""),
-            "PitcherThrows":   sg(p, "pitcher", "throwHand", default=""),
-            "Batter":          sg(p, "batter", "name", default=""),
-            "BatterSide":      sg(p, "batter", "side", default=""),
+            "Pitcher":         sg(p, "pitcher",   "name",      default=""),
+            "PitcherTeam":     sg(p, "pitcher",   "team",      default=""),
+            "PitcherThrows":   sg(p, "pitcher",   "throwHand", default=""),
+            "Batter":          sg(p, "batter",    "name",      default=""),
+            "BatterSide":      sg(p, "batter",    "side",      default=""),
             "Inning":          sg(p, "gameState", "inning"),
             "TopBottom":       sg(p, "gameState", "topBottom"),
             "Outs":            sg(p, "gameState", "outs"),
             "Balls":           sg(p, "gameState", "balls"),
             "Strikes":         sg(p, "gameState", "strikes"),
-            "TaggedPitchType": sg(p, "pitchTag", "taggedPitchType", default=""),
-            "AutoPitchType":   sg(p, "pitchTag", "autoPitchType", default=""),
-            "PitchCall":       sg(p, "pitchTag", "pitchCall", default=""),
+            "TaggedPitchType": sg(p, "pitchTag",  "taggedPitchType", default=""),
+            "AutoPitchType":   sg(p, "pitchTag",  "autoPitchType",   default=""),
+            "PitchCall":       sg(p, "pitchTag",  "pitchCall",       default=""),
             "KorBB":           p.get("korBB", ""),
-            "PlayResult":      sg(p, "playResult", "playResult", default=""),
-            "OutsOnPlay":      sf(sg(p, "playResult", "outsOnPlay", default=0)),
-            "RunsScored":      sf(sg(p, "playResult", "runsScored", default=0)),
+            "PlayResult":      sg(p, "playResult", "playResult",  default=""),
+            "OutsOnPlay":      sf(sg(p, "playResult", "outsOnPlay",  default=0)),
+            "RunsScored":      sf(sg(p, "playResult", "runsScored",  default=0)),
         })
 
     plays_df = pd.DataFrame(rows)
@@ -216,197 +179,247 @@ def flatten_game(plays_raw, balls_raw, session):
     plays_df["PitchNo"] = pd.to_numeric(plays_df["PitchNo"], errors="coerce")
     plays_df = plays_df.sort_values("PitchNo").reset_index(drop=True)
 
-    pr, hr_ = [], []
+    pitch_rows, hit_rows = [], []
     for b in balls_raw:
-        kind = b.get("kind", ""); pid = b.get("playId")
+        kind = b.get("kind",""); pid = b.get("playId")
         if kind == "Pitch":
-            pr.append({
+            pitch_rows.append({
                 "PlayID":           pid,
-                "RelSpeed":         sf(sg(b, "pitch", "release", "relSpeed")),
-                "SpinRate":         sf(sg(b, "pitch", "release", "spinRate")),
-                "Extension":        sf(sg(b, "pitch", "release", "extension")),
-                "RelHeight":        sf(sg(b, "pitch", "release", "relHeight")),
-                "RelSide":          sf(sg(b, "pitch", "release", "relSide")),
-                "HorzBreak":        sf(sg(b, "pitch", "movement", "horzBreak")),
-                "InducedVertBreak": sf(sg(b, "pitch", "movement", "inducedVertBreak")),
-                "PlateLocHeight":   sf(sg(b, "pitch", "location", "plateLocHeight")),
-                "PlateLocSide":     sf(sg(b, "pitch", "location", "plateLocSide")),
-                "VertApprAngle":    sf(sg(b, "pitch", "location", "vertApprAngle")),
+                "RelSpeed":         sf(sg(b,"pitch","release","relSpeed")),
+                "SpinRate":         sf(sg(b,"pitch","release","spinRate")),
+                "Extension":        sf(sg(b,"pitch","release","extension")),
+                "RelHeight":        sf(sg(b,"pitch","release","relHeight")),
+                "RelSide":          sf(sg(b,"pitch","release","relSide")),
+                "HorzBreak":        sf(sg(b,"pitch","movement","horzBreak")),
+                "InducedVertBreak": sf(sg(b,"pitch","movement","inducedVertBreak")),
+                "PlateLocHeight":   sf(sg(b,"pitch","location","plateLocHeight")),
+                "PlateLocSide":     sf(sg(b,"pitch","location","plateLocSide")),
+                "VertApprAngle":    sf(sg(b,"pitch","location","vertApprAngle")),
             })
         elif kind == "Hit":
-            hr_.append({
+            hit_rows.append({
                 "PlayID":      pid,
-                "ExitSpeed":   sf(sg(b, "hit", "launch", "exitSpeed")),
-                "LaunchAngle": sf(sg(b, "hit", "launch", "angle")),
+                "ExitSpeed":   sf(sg(b,"hit","launch","exitSpeed")),
+                "LaunchAngle": sf(sg(b,"hit","launch","angle")),
             })
 
-    pbdf = pd.DataFrame(pr).drop_duplicates("PlayID", keep="first") if pr else pd.DataFrame()
-    hbdf = pd.DataFrame(hr_).drop_duplicates("PlayID", keep="first") if hr_ else pd.DataFrame()
+    pbdf = pd.DataFrame(pitch_rows).drop_duplicates("PlayID",keep="first") if pitch_rows else pd.DataFrame()
+    hbdf = pd.DataFrame(hit_rows).drop_duplicates("PlayID",keep="first")   if hit_rows  else pd.DataFrame()
 
     df = plays_df
     if not pbdf.empty:
         df = df.merge(pbdf, on="PlayID", how="left")
     else:
         for c in ["RelSpeed","SpinRate","Extension","RelHeight","RelSide",
-                   "HorzBreak","InducedVertBreak","PlateLocHeight","PlateLocSide","VertApprAngle"]:
+                  "HorzBreak","InducedVertBreak","PlateLocHeight","PlateLocSide","VertApprAngle"]:
             df[c] = np.nan
     if not hbdf.empty:
         df = df.merge(hbdf, on="PlayID", how="left")
     else:
-        for c in ["ExitSpeed", "LaunchAngle"]:
+        for c in ["ExitSpeed","LaunchAngle"]:
             df[c] = np.nan
 
     return df.drop_duplicates("PlayID", keep="first")
 
 def resolve_pt(row):
-    t = row.get("TaggedPitchType", "") or ""
-    a = row.get("AutoPitchType", "") or ""
-    if t in ("Fastball", "FourSeamFastBall"):    return "Fastball"
-    if t in ("Sinker", "TwoSeamFastBall"):        return "Sinker"
-    if t == "Cutter":                              return "Cutter"
-    if t in ("Slider", "Sweeper"):                return "Slider"
-    if t in ("Curveball", "CurveBall"):           return "Curveball"
-    if t in ("ChangeUp", "Changeup", "Splitter"): return "ChangeUp"
-    if a in ("Fastball", "FourSeamFastBall"):    return "Fastball"
-    if a in ("Sinker", "TwoSeamFastBall"):        return "Sinker"
-    if a == "Cutter":                              return "Cutter"
-    if a in ("Slider", "Sweeper"):                return "Slider"
-    if a in ("Curveball", "CurveBall"):           return "Curveball"
-    if a in ("ChangeUp", "Changeup", "Splitter"): return "ChangeUp"
+    t = row.get("TaggedPitchType","") or ""
+    a = row.get("AutoPitchType","")   or ""
+    for v in [t, a]:
+        if v in ("Fastball","FourSeamFastBall"):   return "Fastball"
+        if v in ("Sinker","TwoSeamFastBall"):       return "Sinker"
+        if v == "Cutter":                           return "Cutter"
+        if v in ("Slider","Sweeper"):               return "Slider"
+        if v in ("Curveball","CurveBall"):          return "Curveball"
+        if v in ("ChangeUp","Changeup","Splitter"): return "ChangeUp"
     return "Other"
+
+def optimize_df(df):
+    """Downcast floats and categorize to save memory."""
+    # Normalize GameDate to string YYYY-MM-DD to avoid mixed type issues
+    if "GameDate" in df.columns:
+        df["GameDate"] = pd.to_datetime(df["GameDate"], errors="coerce").dt.strftime("%Y-%m-%d")
+    for col in df.select_dtypes(include=["float64"]).columns:
+        df[col] = df[col].astype("float32")
+    for col in df.select_dtypes(include=["int64"]).columns:
+        df[col] = pd.to_numeric(df[col], downcast="integer")
+    cat_cols = ["PitcherTeam","PitcherThrows","BatterSide","TopBottom",
+                "TaggedPitchType","AutoPitchType","PitchCall","KorBB",
+                "PlayResult","PitchType","HomeTeam","AwayTeam"]
+    for col in cat_cols:
+        if col in df.columns and df[col].nunique() < 500:
+            df[col] = df[col].astype("category")
+    return df
+
+# ===========================================================================
+# INDEX MANAGEMENT
+# ===========================================================================
+def load_index():
+    if not os.path.exists(INDEX_PATH):
+        return pd.DataFrame(columns=["SessionID","GameDate","HomeTeam","AwayTeam"])
+    return pd.read_parquet(INDEX_PATH)
+
+def save_index(sessions):
+    rows = []
+    for s in sessions:
+        rows.append({
+            "SessionID": s.get("sessionId",""),
+            "GameDate":  (s.get("gameDateLocal") or s.get("gameDateUtc") or "")[:10],
+            "HomeTeam":  s.get("homeTeam",{}).get("name",""),
+            "AwayTeam":  s.get("awayTeam",{}).get("name",""),
+        })
+    df = pd.DataFrame(rows).drop_duplicates("SessionID")
+    df["GameDate"] = pd.to_datetime(df["GameDate"], errors="coerce").dt.date
+    df.to_parquet(INDEX_PATH, index=False)
+    print(f"  Index saved: {len(df)} games")
+    return df
+
+# ===========================================================================
+# MIGRATION
+# ===========================================================================
+def migrate_legacy():
+    if not os.path.exists(LEGACY_PATH):
+        return
+    print(f"\n  Migrating legacy pitches.parquet...")
+    df = pd.read_parquet(LEGACY_PATH)
+    df["GameDate"] = pd.to_datetime(df["GameDate"], errors="coerce").dt.date
+    os.makedirs(BY_DATE_DIR, exist_ok=True)
+    migrated = 0
+    for gdate, group in df.groupby("GameDate"):
+        if pd.isna(gdate): continue
+        # Normalize date to YYYY-MM-DD string safe for filenames
+        try:
+            gdate_str = pd.Timestamp(gdate).strftime("%Y-%m-%d")
+        except Exception:
+            gdate_str = str(gdate).replace("/", "-")[:10]
+        out_path = os.path.join(BY_DATE_DIR, f"{gdate_str}.parquet")
+        if not os.path.exists(out_path):
+            optimize_df(group.copy()).to_parquet(out_path, index=False)
+            migrated += 1
+    print(f"  Migrated {migrated} date files to {BY_DATE_DIR}/")
+    os.rename(LEGACY_PATH, LEGACY_PATH + ".bak")
+    print(f"  Renamed pitches.parquet to pitches.parquet.bak")
 
 # ===========================================================================
 # MAIN
 # ===========================================================================
 def main():
     print("=" * 60)
-    print(f"FETCH DATA — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"FETCH DATA -- {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 60)
 
-    os.makedirs(DATA_DIR, exist_ok=True)
+    os.makedirs(DATA_DIR,    exist_ok=True)
+    os.makedirs(BY_DATE_DIR, exist_ok=True)
 
-    # ---- Step 1: Load existing data to find already-fetched sessions ----
-    pitches_path  = os.path.join(DATA_DIR, "pitches.parquet")
-    sessions_path = os.path.join(DATA_DIR, "sessions.parquet")
+    migrate_legacy()
 
-    existing_session_ids = set()
-    existing_df = None
+    existing_index       = load_index()
+    existing_session_ids = set(existing_index["SessionID"].dropna().astype(str))
+    print(f"\n  Existing: {len(existing_session_ids)} sessions")
 
-    if os.path.exists(pitches_path):
-        existing_df = pd.read_parquet(pitches_path)
-        existing_session_ids = set(existing_df["SessionID"].dropna().unique())
-        print(f"\n  Existing data: {len(existing_df)} pitches, {len(existing_session_ids)} sessions")
-    else:
-        print("\n  No existing data — full season fetch")
-
-    # ---- Step 2: Fetch all sessions for the 2026 season ----
-    print(f"\n[1/3] Fetching session list from {SEASON_START} → today...")
+    print(f"\n[1/3] Fetching sessions {SEASON_START} to today...")
     all_sessions = []
-    chunk_start = SEASON_START
-    today = date.today()
+    chunk_start  = SEASON_START
+    today        = date.today()
 
     while chunk_start <= today:
         chunk_end = min(chunk_start + timedelta(days=14), today + timedelta(days=1))
-        sessions = fetch_sessions(f"{chunk_start}T00:00:00Z", f"{chunk_end}T00:00:00Z")
+        sessions  = fetch_sessions(f"{chunk_start}T00:00:00Z", f"{chunk_end}T00:00:00Z")
         if sessions:
             all_sessions.extend(sessions)
-            print(f"  {chunk_start} → {chunk_end}: {len(sessions)} sessions")
+            print(f"  {chunk_start} to {chunk_end}: {len(sessions)} sessions")
         time.sleep(1.0)
         chunk_start = chunk_end
 
-    # Deduplicate
     seen, unique = set(), []
     for s in all_sessions:
-        sid = s.get("sessionId", "")
+        sid = s.get("sessionId","")
         if sid and sid not in seen:
             seen.add(sid); unique.append(s)
 
-    # Filter D1
     d1 = [s for s in unique if is_d1_session(s)]
     if not d1:
-        print(f"\n  WARNING: D1 filter returned 0 — using all {len(unique)} sessions")
+        print(f"  WARNING: D1 filter returned 0, using all {len(unique)} sessions")
         d1 = unique
-    else:
-        print(f"\n  D1 sessions: {len(d1)} of {len(unique)} total")
+    print(f"  D1 sessions: {len(d1)} of {len(unique)} total")
 
-    # Only fetch sessions we don't already have
     new_sessions = [s for s in d1 if s.get("sessionId") not in existing_session_ids]
     print(f"  New sessions to fetch: {len(new_sessions)}")
 
     if not new_sessions:
-        print("\n  Already up to date — nothing new to fetch.")
+        print("\n  Already up to date.")
+        save_index(d1)
         _write_timestamp()
         return
 
-    # ---- Step 3: Fetch pitch data for new sessions ----
     print(f"\n[2/3] Fetching pitch data ({len(new_sessions)} games)...")
-    new_dfs = []
 
-    for i, session in enumerate(new_sessions):
-        sid = session.get("sessionId")
-        plays, balls = fetch_game_data(sid)
-        if plays:
-            df = flatten_game(plays, balls, session)
-            if not df.empty:
-                df["PitchType"] = df.apply(resolve_pt, axis=1)
-                new_dfs.append(df)
+    sessions_by_date = defaultdict(list)
+    for s in new_sessions:
+        raw = (s.get("gameDateLocal") or s.get("gameDateUtc") or "")[:10]
+        # Normalize to YYYY-MM-DD regardless of source format
+        try:
+            gdate = pd.to_datetime(raw).strftime("%Y-%m-%d")
+        except Exception:
+            gdate = raw.replace("/", "-")
+        sessions_by_date[gdate].append(s)
 
-        time.sleep(1.5)  # polite — no rush at 6 AM
+    total_new = 0
+    processed = 0
 
-        if (i + 1) % 10 == 0 or (i + 1) == len(new_sessions):
-            print(f"  {i+1}/{len(new_sessions)} sessions — {sum(len(d) for d in new_dfs)} new pitches")
+    for gdate, date_sessions in sorted(sessions_by_date.items()):
+        date_file = os.path.join(BY_DATE_DIR, f"{gdate}.parquet")
+        new_dfs   = []
 
-    if not new_dfs:
-        print("\n  No new pitch data found.")
-        _write_timestamp()
-        return
+        for session in date_sessions:
+            sid = session.get("sessionId")
+            plays, balls = fetch_game_data(sid)
+            if plays:
+                df = flatten_game(plays, balls, session)
+                if not df.empty:
+                    df["PitchType"] = df.apply(resolve_pt, axis=1)
+                    new_dfs.append(df)
+            time.sleep(1.5)
+            processed += 1
+            if processed % 10 == 0:
+                print(f"  {processed}/{len(new_sessions)} sessions processed")
 
-    # ---- Step 4: Merge with existing and save ----
-    print(f"\n[3/3] Saving data...")
-    new_df = pd.concat(new_dfs, ignore_index=True)
+        if not new_dfs:
+            continue
 
-    if existing_df is not None:
-        combined = pd.concat([existing_df, new_df], ignore_index=True)
-        combined = combined.drop_duplicates("PlayID", keep="first")
-    else:
-        combined = new_df
+        new_df = pd.concat(new_dfs, ignore_index=True)
 
-    combined.to_parquet(pitches_path, index=False)
-    print(f"  pitches.parquet — {len(combined)} total pitches")
+        if os.path.exists(date_file):
+            existing = pd.read_parquet(date_file)
+            combined = pd.concat([existing, new_df], ignore_index=True)
+            combined = combined.drop_duplicates("PlayID", keep="first")
+        else:
+            combined = new_df
 
-    # Save session metadata
-    session_rows = []
-    for s in d1:
-        session_rows.append({
-            "SessionID": s.get("sessionId"),
-            "GameDate":  (s.get("gameDateLocal") or s.get("gameDateUtc") or "")[:10],
-            "HomeTeam":  s.get("homeTeam", {}).get("name", ""),
-            "AwayTeam":  s.get("awayTeam", {}).get("name", ""),
-            "Level":     str(s.get("level", "")),
-        })
-    pd.DataFrame(session_rows).to_parquet(sessions_path, index=False)
-    print(f"  sessions.parquet — {len(session_rows)} sessions")
+        optimize_df(combined).to_parquet(date_file, index=False)
+        total_new += len(new_df)
+        print(f"  {gdate}: {len(new_df)} pitches written")
 
+    print(f"\n  Total new pitches: {total_new}")
+
+    print(f"\n[3/3] Saving index...")
+    save_index(d1)
     _write_timestamp()
-
-    print(f"\n  Done! Added {len(new_df)} pitches from {len(new_dfs)} new games.")
-    print(f"  Total dataset: {len(combined)} pitches")
+    print(f"\n  Done! {len(new_sessions)} new games added.")
 
 def _write_timestamp():
     ts_path = os.path.join(DATA_DIR, "last_updated.json")
     with open(ts_path, "w") as f:
         json.dump({
-            "last_updated": datetime.now().isoformat(),
+            "last_updated":      datetime.now().isoformat(),
             "last_updated_date": date.today().isoformat(),
         }, f, indent=2)
-    print(f"  Timestamp written → {ts_path}")
 
 def _git_push():
     import subprocess
     repo_dir = os.path.dirname(os.path.abspath(__file__))
     print("\n  Pushing data to GitHub...")
     cmds = [
-        ["git", "add", "data/pitches.parquet", "data/last_updated.json"],
+        ["git", "add", "data/by_date/", "data/index.parquet", "data/last_updated.json"],
         ["git", "commit", "-m", f"data update {date.today()}"],
         ["git", "push"],
     ]
@@ -414,11 +427,9 @@ def _git_push():
         result = subprocess.run(cmd, cwd=repo_dir, capture_output=True, text=True)
         if result.returncode != 0:
             if "nothing to commit" in result.stdout + result.stderr:
-                print("  Nothing new to push.")
-                return
-            print(f"  Git error: {result.stderr.strip()}")
-            return
-    print("  ✅ Pushed to GitHub — Streamlit Cloud will redeploy automatically.")
+                print("  Nothing new to push."); return
+            print(f"  Git error: {result.stderr.strip()}"); return
+    print("  Pushed to GitHub.")
 
 if __name__ == "__main__":
     main()
