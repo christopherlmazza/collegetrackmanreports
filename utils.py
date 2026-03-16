@@ -396,6 +396,8 @@ def load_all_pitches():
     Returns (index_df, path) — index_df has team/date info for sidebar.
     Actual pitch data is loaded on demand via load_team_data().
     """
+    # Debug: show what paths we're checking
+    st.sidebar.caption(f"DEBUG: DATA_DIR={DATA_DIR} | INDEX exists={os.path.exists(INDEX_PATH)} | BY_DATE exists={os.path.exists(BY_DATE_DIR)}")
     idx = load_index()
     if idx.empty:
         return None, None
