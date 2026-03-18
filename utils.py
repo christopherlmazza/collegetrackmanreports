@@ -1783,15 +1783,15 @@ def generate_hitter_page(batter_df, batter_name, game_date, opponent,
     ax_scatter = fig.add_subplot(gs[2, 0]); draw_ev_la_scatter(ax_scatter, bip)
     ax_evdist  = fig.add_subplot(gs[2, 1]); draw_ev_distribution(ax_evdist, bip)
     ax_zone_ev = fig.add_subplot(gs[2, 2])
-    draw_zone_heatmap(ax_zone_ev, batter_df, "ev", f"Zone EV{filter_suffix}", heat_df)
+    draw_zone_heatmap(ax_zone_ev, batter_df, "ev", f"Zone EV (Catcher POV){filter_suffix}", heat_df)
 
     # ── Row 3: Zone xwOBA | Swing rate | Whiff% ──
     ax_zone_xw = fig.add_subplot(gs[3, 0])
-    draw_zone_heatmap(ax_zone_xw, batter_df, "xwoba", f"Zone xwOBA{filter_suffix}", heat_df)
+    draw_zone_heatmap(ax_zone_xw, batter_df, "xwoba", f"Zone xwOBA (Catcher POV){filter_suffix}", heat_df)
     ax_swing = fig.add_subplot(gs[3, 1])
-    draw_zone_heatmap(ax_swing, batter_df, "swing", f"Swing Rate{filter_suffix}", heat_df)
+    draw_zone_heatmap(ax_swing, batter_df, "swing", f"Swing Rate (Catcher POV){filter_suffix}", heat_df)
     ax_whiff = fig.add_subplot(gs[3, 2])
-    draw_zone_heatmap(ax_whiff, batter_df, "whiff", f"Whiff%{filter_suffix}", heat_df)
+    draw_zone_heatmap(ax_whiff, batter_df, "whiff", f"Whiff% (Catcher POV){filter_suffix}", heat_df)
 
     # ── Row 4: BB profile | Spray direction | blank ──
     ax_bb   = fig.add_subplot(gs[4, 0]); draw_batted_ball_profile(ax_bb, stats)
