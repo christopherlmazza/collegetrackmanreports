@@ -106,10 +106,17 @@ def fetch_sessions(date_from_str, date_to_str):
         if resp.status_code == 429:
             wait = int(resp.headers.get("Retry-After", 60*(attempt+1)))
             print(f"  Rate limited, waiting {wait}s..."); time.sleep(wait); continue
+        if resp.status_code == 500:
+            wait = 30 * (attempt + 1)
+            print(f"  Server error (500), retrying in {wait}s (attempt {attempt+1}/5)...")
+            time.sleep(wait); continue
         if not resp.ok:
-            print(f"  Session fetch failed: {resp.status_code}"); return []
+            wait = 15 * (attempt + 1)
+            print(f"  Session fetch failed: {resp.status_code}, retrying in {wait}s...")
+            time.sleep(wait); continue
         data = resp.json()
         return data if isinstance(data, list) else data.get("sessions", [])
+    print("  Session fetch failed after 5 attempts — will retry next run.")
     return []
 
 def fetch_game_data(session_id):
@@ -347,7 +354,8 @@ def main():
 
     if not new_sessions:
         print("\n  Already up to date.")
-        save_index(d1)
+        if d1:
+            save_index(d1)
         _write_timestamp()
         return
 
