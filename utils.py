@@ -1263,91 +1263,106 @@ def draw_ev_distribution(ax, bip):
     ax.set_ylabel("Count", fontsize=7)
     ax.set_title("EV Distribution", fontsize=9, fontweight="bold", color=TEXT_COLOR)
 
-def _zone_grid(df, stat):
-    """Build 6x6 heatmap grid. Min 1 pitch per cell — show all data we have."""
-    SWING_CALLS = ["StrikeSwinging", "FoulBall", "FoulBallNotFieldable", "InPlay"]
-    x_bins = np.linspace(-1.5, 1.5, 7)
-    y_bins = np.linspace(1.0, 4.0, 7)
-    grid   = np.full((6, 6), np.nan)
-
-    bip = df[df["PitchCall"] == "InPlay"].copy()
-    if not bip.empty:
-        bip["xwOBA_val"] = bip.apply(
-            lambda r: calc_xwoba(r["ExitSpeed"], r["LaunchAngle"]), axis=1)
-
-    for i in range(6):
-        for j in range(6):
-            x0, x1 = x_bins[j], x_bins[j+1]
-            y0, y1 = y_bins[i], y_bins[i+1]
-            loc_mask = (df["PlateLocSide"].between(x0, x1) &
-                        df["PlateLocHeight"].between(y0, y1))
-            cell_all = df[loc_mask]
-            cell_bip = bip[bip["PlateLocSide"].between(x0, x1) &
-                           bip["PlateLocHeight"].between(y0, y1)] if not bip.empty else bip
-
-            if stat == "ev" and len(cell_bip) >= 1:
-                ev_vals = cell_bip["ExitSpeed"].dropna()
-                if not ev_vals.empty: grid[i, j] = ev_vals.mean()
-            elif stat == "xwoba" and len(cell_bip) >= 1:
-                xw_vals = cell_bip["xwOBA_val"].dropna()
-                if not xw_vals.empty: grid[i, j] = xw_vals.mean()
-            elif stat == "whiff":
-                sw = cell_all["PitchCall"].isin(SWING_CALLS).sum()
-                wh = (cell_all["PitchCall"] == "StrikeSwinging").sum()
-                if sw >= 1: grid[i, j] = wh / sw * 100
-            elif stat == "swing":
-                total = len(cell_all)
-                sw    = cell_all["PitchCall"].isin(SWING_CALLS).sum()
-                if total >= 1: grid[i, j] = sw / total * 100
-
-    return grid, x_bins, y_bins
-
 def draw_zone_heatmap(ax, df, stat="ev", title="EV Heatmap", filter_df=None):
-    """2D heatmap of a stat by plate location. filter_df overrides df if provided."""
+    """
+    KDE-smoothed zone heatmap — same style as pitcher heatmaps.
+    Uses gaussian_kde + weighted pcolormesh for smooth gradients.
+    """
+    SWING_CALLS = ["StrikeSwinging", "FoulBall", "FoulBallNotFieldable", "InPlay"]
     _hax(ax)
     use_df = filter_df if filter_df is not None else df
     if use_df.empty:
         ax.text(0.5, 0.5, "No data", transform=ax.transAxes,
-                ha="center", va="center", color=MUTED_TEXT, fontsize=8); return
+                ha="center", va="center", color=MUTED_TEXT, fontsize=8)
+        return
 
-    grid, x_bins, y_bins = _zone_grid(use_df, stat)
+    # ── Build per-pitch value array ──
+    plot_df = use_df[use_df["PlateLocSide"].notna() & use_df["PlateLocHeight"].notna()].copy()
 
-    # Color ranges
     if stat == "ev":
-        vmin, vmax, cmap = 65, 105, "RdYlGn"
+        plot_df = plot_df[plot_df["PitchCall"] == "InPlay"].copy()
+        plot_df = plot_df[plot_df["ExitSpeed"].notna()]
+        plot_df["_val"] = plot_df["ExitSpeed"]
+        vmin, vmax, cmap = 65, 105, "RdYlGn_r"  # red=hard
     elif stat == "xwoba":
-        vmin, vmax, cmap = 0.0, 1.2, "RdYlGn"
+        plot_df = plot_df[plot_df["PitchCall"] == "InPlay"].copy()
+        plot_df["_val"] = plot_df.apply(
+            lambda r: calc_xwoba(r["ExitSpeed"], r["LaunchAngle"]), axis=1)
+        plot_df = plot_df[plot_df["_val"].notna()]
+        vmin, vmax, cmap = 0.0, 1.2, "RdYlGn_r"
     elif stat == "whiff":
-        vmin, vmax, cmap = 0, 60, "RdYlGn_r"
-    else:  # swing
-        vmin, vmax, cmap = 0, 100, "RdYlGn"
+        plot_df = plot_df[plot_df["PitchCall"].isin(SWING_CALLS)].copy()
+        plot_df["_val"] = (plot_df["PitchCall"] == "StrikeSwinging").astype(float)
+        vmin, vmax, cmap = 0, 0.6, "RdYlGn_r"
+    elif stat == "swing":
+        plot_df["_val"] = plot_df["PitchCall"].isin(SWING_CALLS).astype(float)
+        vmin, vmax, cmap = 0, 1.0, "RdYlGn"
+    else:
+        return
 
-    im = ax.imshow(grid, extent=[-1.5, 1.5, 1.0, 4.0], origin="lower",
-                   cmap=cmap, vmin=vmin, vmax=vmax, aspect="auto", alpha=0.88)
-    zone = plt.Rectangle((-0.83, 1.5), 1.66, 2.0, lw=1.5, ec="white", fc="none")
-    ax.add_patch(zone)
+    if len(plot_df) < 3:
+        ax.text(0.5, 0.5, f"Not enough data (n={len(plot_df)})",
+                transform=ax.transAxes, ha="center", va="center",
+                color=MUTED_TEXT, fontsize=9)
+        return
 
-    for i in range(6):
-        for j in range(6):
-            v = grid[i, j]
-            if not np.isnan(v):
-                fmt = f"{v:.0f}" if stat in ("ev", "whiff", "swing") else f"{v:.2f}"
-                # Pick text color for contrast against background
-                norm_v = (v - vmin) / max(vmax - vmin, 1)
-                # More aggressive contrast: dark text on light/mid cells, white on dark
-                txt_col = "black" if norm_v < 0.6 else "white"
-                ax.text(x_bins[j] + 0.25, y_bins[i] + 0.25, fmt,
-                        ha="center", va="center", fontsize=7,
-                        color=txt_col, fontweight="bold",
-                        bbox=dict(boxstyle="round,pad=0.1", fc="none", ec="none"))
+    x = plot_df["PlateLocSide"].values
+    y = plot_df["PlateLocHeight"].values
+    vals = plot_df["_val"].values
 
-    ax.set_xlim(-1.5, 1.5); ax.set_ylim(1.0, 4.0)
-    ax.set_xlabel("Plate Side (ft)", fontsize=7)
-    ax.set_ylabel("Height (ft)", fontsize=7)
-    ax.set_title(title, fontsize=9, fontweight="bold", color=TEXT_COLOR)
-    cb = plt.colorbar(im, ax=ax, shrink=0.8)
-    cb.ax.yaxis.set_tick_params(color=TEXT_COLOR, labelsize=6)
-    plt.setp(plt.getp(cb.ax.axes, 'yticklabels'), color=TEXT_COLOR)
+    xi = np.linspace(-2.0, 2.0, 80)
+    yi = np.linspace(0.5, 5.0, 80)
+    Xi, Yi = np.meshgrid(xi, yi)
+
+    try:
+        positions = np.vstack([x, y])
+        kde = gaussian_kde(positions, bw_method=0.35)
+        density = kde(np.vstack([Xi.ravel(), Yi.ravel()])).reshape(Xi.shape)
+
+        # Weighted average of stat value across grid
+        Zi = np.zeros_like(Xi)
+        W  = np.zeros_like(Xi)
+        for px, py, pv in zip(x, y, vals):
+            dist2   = (Xi - px)**2 + (Yi - py)**2
+            weights = np.exp(-dist2 / (2 * 0.3**2))
+            Zi += weights * pv
+            W  += weights
+        W[W == 0] = 1
+        Zi = Zi / W
+        # Mask low-density areas
+        Zi[density < density.max() * 0.05] = np.nan
+
+        ax.pcolormesh(Xi, Yi, Zi, cmap=cmap, vmin=vmin, vmax=vmax,
+                      shading="gouraud", alpha=0.88, zorder=1)
+    except Exception:
+        pass
+
+    # Scatter dots
+    ax.scatter(x, y, c="#333333", s=8, alpha=0.3, zorder=3)
+
+    # Strike zone box
+    ax.add_patch(plt.Rectangle((-0.83, 1.5), 1.66, 2.0,
+                                lw=2.0, ec="#222222", fc="none", zorder=5))
+    # Zone thirds
+    for yline in [2.167, 2.833]:
+        ax.plot([-0.83, 0.83], [yline, yline],
+                color="#333333", lw=0.6, ls="--", alpha=0.5, zorder=4)
+    # Home plate
+    ax.add_patch(Polygon([(-.708,.15),(.708,.15),(.708,.35),(0,.55),(-.708,.35)],
+                 closed=True, fc="#CCCCCC", ec="#333333", lw=.8, alpha=0.7, zorder=5))
+
+    # Colorbar
+    sm = plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(vmin=vmin, vmax=vmax))
+    sm.set_array([])
+    cb = plt.colorbar(sm, ax=ax, shrink=0.75, pad=0.02)
+    cb.ax.tick_params(labelsize=9, colors=TEXT_COLOR)
+
+    ax.set_xlim(-2.0, 2.0); ax.set_ylim(0.5, 5.0)
+    ax.set_xlabel("Plate Side (ft)", fontsize=11, color=TEXT_COLOR)
+    ax.set_ylabel("Plate Height (ft)", fontsize=11, color=TEXT_COLOR)
+    ax.set_title(title, fontsize=13, fontweight="bold", color=TEXT_COLOR)
+    ax.tick_params(colors=TEXT_COLOR, labelsize=9)
+    for sp in ax.spines.values(): sp.set_color("#CCCCCC")
 
 def draw_swing_zones(ax, df):
     """Swing rate zone heatmap."""
