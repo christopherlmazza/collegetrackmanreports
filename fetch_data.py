@@ -54,7 +54,7 @@ CLIENT_SECRET = _secrets.get("TRACKMAN_CLIENT_SECRET", "")
 if not CLIENT_ID or not CLIENT_SECRET:
     print("ERROR: TRACKMAN_CLIENT_ID and TRACKMAN_CLIENT_SECRET not found in .streamlit/secrets.toml")
     sys.exit(1)
-SEASON_START  = date(2026, 2, 1)
+SEASON_START  = date(2026, 3, 15)
 
 DATA_DIR    = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 BY_DATE_DIR = os.path.join(DATA_DIR, "by_date")
