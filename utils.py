@@ -225,7 +225,7 @@ def draw_zone(ax, data, title, pts):
     ax.add_patch(Rectangle((-0.95, 1.6), 1.9, 1.9, fill=False, ec="#333333", lw=1.5, alpha=0.8, zorder=3))
     ax.add_patch(Rectangle((-0.95, 1.6), 1.9, 1.9, fill=True, fc="#E8EDF2", alpha=0.3, zorder=2))
     ax.add_patch(Rectangle((-1.4, 1.2), 2.8, 2.7, fill=False, ec="#AAAAAA", lw=0.7, ls="--", alpha=0.4, zorder=2))
-    ax.add_patch(Polygon([(-.708, .15), (.708, .15), (.708, .35), (0, .55), (-.708, .35)],
+    ax.add_patch(Polygon([(-.708, .55), (.708, .55), (.708, .35), (0, .15), (-.708, .35)],
                          closed=True, fc="none", ec=MUTED_TEXT, lw=.7, alpha=0.4))
     outcome_markers = {
         "BallCalled": ("o", False), "BallinDirt": ("o", False), "BallIntentional": ("o", False),
@@ -1001,7 +1001,7 @@ def generate_heatmap(p, pitch_type, metric="run_value"):
         side_data = sub[sub["BatterSide"] == side]
 
         ax.add_patch(Rectangle((-0.95, 1.6), 1.9, 1.9, fill=False, ec="black", lw=1.5, zorder=10))
-        ax.add_patch(Polygon([(-.708, .15), (.708, .15), (.708, .35), (0, .55), (-.708, .35)],
+        ax.add_patch(Polygon([(-.708, .55), (.708, .55), (.708, .35), (0, .15), (-.708, .35)],
                              closed=True, fc="#CCCCCC", ec="black", lw=.5, alpha=0.5, zorder=10))
 
         if len(side_data) >= 5:
@@ -1343,8 +1343,8 @@ def draw_zone_heatmap(ax, df, stat="ev", title="EV Heatmap", filter_df=None):
     for yline in [2.167, 2.833]:
         ax.plot([-0.83, 0.83], [yline, yline],
                 color="#111111", lw=1.0, ls="--", alpha=0.6, zorder=4)
-    # Home plate
-    ax.add_patch(Polygon([(-.708,.15),(.708,.15),(.708,.35),(0,.55),(-.708,.35)],
+    # Home plate — tip points DOWN (toward viewer = catcher POV)
+    ax.add_patch(Polygon([(-.708,.55),(.708,.55),(.708,.35),(0,.15),(-.708,.35)],
                  closed=True, fc="#CCCCCC", ec="#222222", lw=1.2, alpha=0.85, zorder=5))
 
     ax.set_xlim(-1.5, 1.5); ax.set_ylim(0.8, 4.0)
@@ -1644,8 +1644,8 @@ def generate_hitter_heatmap(batter_df, metric="ev", pitch_type=None,
     for yline in [2.167, 2.833]:
         ax.plot([-0.95, 0.95], [yline, yline],
                 color="#333333", lw=0.5, ls="--", alpha=0.5, zorder=9)
-    # Home plate
-    ax.add_patch(Polygon([(-.708,.15),(.708,.15),(.708,.35),(0,.55),(-.708,.35)],
+    # Home plate — tip points DOWN (toward viewer = catcher POV)
+    ax.add_patch(Polygon([(-.708,.55),(.708,.55),(.708,.35),(0,.15),(-.708,.35)],
                          closed=True, fc="#CCCCCC", ec="#333333", lw=.8,
                          alpha=0.7, zorder=10))
 
@@ -1783,15 +1783,15 @@ def generate_hitter_page(batter_df, batter_name, game_date, opponent,
     ax_scatter = fig.add_subplot(gs[2, 0]); draw_ev_la_scatter(ax_scatter, bip)
     ax_evdist  = fig.add_subplot(gs[2, 1]); draw_ev_distribution(ax_evdist, bip)
     ax_zone_ev = fig.add_subplot(gs[2, 2])
-    draw_zone_heatmap(ax_zone_ev, batter_df, "ev", f"Zone EV (Catcher POV: + = Inside LHB / Outside RHB){filter_suffix}", heat_df)
+    draw_zone_heatmap(ax_zone_ev, batter_df, "ev", f"Zone EV (Catcher POV){filter_suffix}", heat_df)
 
     # ── Row 3: Zone xwOBA | Swing rate | Whiff% ──
     ax_zone_xw = fig.add_subplot(gs[3, 0])
-    draw_zone_heatmap(ax_zone_xw, batter_df, "xwoba", f"Zone xwOBA (Catcher POV: + = Inside LHB / Outside RHB){filter_suffix}", heat_df)
+    draw_zone_heatmap(ax_zone_xw, batter_df, "xwoba", f"Zone xwOBA (Catcher POV){filter_suffix}", heat_df)
     ax_swing = fig.add_subplot(gs[3, 1])
-    draw_zone_heatmap(ax_swing, batter_df, "swing", f"Swing Rate (Catcher POV: + = Inside LHB / Outside RHB){filter_suffix}", heat_df)
+    draw_zone_heatmap(ax_swing, batter_df, "swing", f"Swing Rate (Catcher POV){filter_suffix}", heat_df)
     ax_whiff = fig.add_subplot(gs[3, 2])
-    draw_zone_heatmap(ax_whiff, batter_df, "whiff", f"Whiff% (Catcher POV: + = Inside LHB / Outside RHB){filter_suffix}", heat_df)
+    draw_zone_heatmap(ax_whiff, batter_df, "whiff", f"Whiff% (Catcher POV){filter_suffix}", heat_df)
 
     # ── Row 4: BB profile | Spray direction | blank ──
     ax_bb   = fig.add_subplot(gs[4, 0]); draw_batted_ball_profile(ax_bb, stats)
