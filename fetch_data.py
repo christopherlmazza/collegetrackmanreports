@@ -31,8 +31,29 @@ from collections import defaultdict
 # ===========================================================================
 BASE_URL      = "https://dataapi.trackmanbaseball.com"
 TOKEN_URL     = "https://login.trackman.com/connect/token"
-CLIENT_ID     = "LongIslandUniversity-02"
-CLIENT_SECRET = "3406f40b-d596-41ff-8110-808d7a4ef38d"
+# Credentials loaded from .streamlit/secrets.toml (never hardcoded in repo)
+def _load_secrets():
+    paths = [
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), ".streamlit", "secrets.toml"),
+        os.path.join(os.path.expanduser("~"), ".streamlit", "secrets.toml"),
+    ]
+    for p in paths:
+        if os.path.exists(p):
+            try:
+                import tomllib
+            except ImportError:
+                import tomli as tomllib
+            with open(p, "rb") as f:
+                return tomllib.load(f)
+    return {}
+
+_secrets      = _load_secrets()
+CLIENT_ID     = _secrets.get("TRACKMAN_CLIENT_ID", "")
+CLIENT_SECRET = _secrets.get("TRACKMAN_CLIENT_SECRET", "")
+
+if not CLIENT_ID or not CLIENT_SECRET:
+    print("ERROR: TRACKMAN_CLIENT_ID and TRACKMAN_CLIENT_SECRET not found in .streamlit/secrets.toml")
+    sys.exit(1)
 SEASON_START  = date(2026, 2, 1)
 
 DATA_DIR    = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
