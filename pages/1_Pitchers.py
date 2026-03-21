@@ -24,8 +24,12 @@ with st.sidebar:
     st.success(f"✅ Data loaded\n\n{n_games} games · Updated {last_updated or 'unknown'}")
 
     all_dates = idx_df["GameDate"].dropna()
-    min_date  = all_dates.min()
-    max_date  = all_dates.max()
+    from datetime import date as _date
+    min_date  = all_dates.min() if not all_dates.empty else _date(2026, 2, 1)
+    max_date  = all_dates.max() if not all_dates.empty else _date.today()
+    # Ensure they are proper date objects not NaT
+    if hasattr(min_date, "date"): min_date = min_date.date()
+    if hasattr(max_date, "date"): max_date = max_date.date()
     col1, col2 = st.columns(2)
     with col1:
         date_from = st.date_input("From", value=max_date - timedelta(days=7),
