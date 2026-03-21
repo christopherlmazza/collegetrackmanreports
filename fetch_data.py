@@ -31,8 +31,8 @@ from collections import defaultdict
 # ===========================================================================
 BASE_URL      = "https://dataapi.trackmanbaseball.com"
 TOKEN_URL     = "https://login.trackman.com/connect/token"
-CLIENT_ID     = "LongIslandUniversity-01"
-CLIENT_SECRET = "b272ec7f-2ea6-4040-92ea-673804d6fa46"
+CLIENT_ID     = "LongIslandUniversity-02"
+CLIENT_SECRET = "3406f40b-d596-41ff-8110-808d7a4ef38d"
 SEASON_START  = date(2026, 2, 1)
 
 DATA_DIR    = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
@@ -94,29 +94,73 @@ def is_d1_session(s):
 # API FETCHERS
 # ===========================================================================
 def fetch_sessions(date_from_str, date_to_str):
-    for attempt in range(5):
+    """
+    Try multiple approaches to get sessions:
+    1. POST with sessionType (original)
+    2. POST without sessionType
+    3. POST with different field names
+    4. GET request instead of POST
+    """
+    headers = get_headers()
+    if not headers: return []
+
+    payloads = [
+        {"sessionType": "All", "utcDateFrom": date_from_str, "utcDateTo": date_to_str},
+        {"utcDateFrom": date_from_str, "utcDateTo": date_to_str},
+        {"sessionType": "Game", "utcDateFrom": date_from_str, "utcDateTo": date_to_str},
+        {"dateFrom": date_from_str, "dateTo": date_to_str},
+    ]
+
+    for i, payload in enumerate(payloads):
+        for attempt in range(3):
+            try:
+                headers = get_headers()
+                if not headers: return []
+
+                resp = requests.post(
+                    f"{BASE_URL}/api/v1/discovery/game/sessions",
+                    headers=headers,
+                    json=payload,
+                    timeout=60,
+                )
+                if resp.status_code == 429:
+                    wait = int(resp.headers.get("Retry-After", 60))
+                    print(f"  Rate limited, waiting {wait}s..."); time.sleep(wait); continue
+                if resp.status_code == 500:
+                    print(f"  500 error with payload variant {i+1}, trying next...")
+                    break  # try next payload
+                if resp.ok:
+                    data = resp.json()
+                    result = data if isinstance(data, list) else data.get("sessions", [])
+                    if result:
+                        print(f"  Success with payload variant {i+1}")
+                        return result
+                else:
+                    print(f"  Error {resp.status_code} with payload variant {i+1}")
+                    break
+            except Exception as e:
+                print(f"  Exception: {e}")
+                time.sleep(15)
+
+    # Last resort — try GET with query params
+    try:
         headers = get_headers()
-        if not headers: return []
-        resp = requests.post(
+        resp = requests.get(
             f"{BASE_URL}/api/v1/discovery/game/sessions",
             headers=headers,
-            json={"sessionType":"All","utcDateFrom":date_from_str,"utcDateTo":date_to_str},
+            params={"utcDateFrom": date_from_str, "utcDateTo": date_to_str},
             timeout=60,
         )
-        if resp.status_code == 429:
-            wait = int(resp.headers.get("Retry-After", 60*(attempt+1)))
-            print(f"  Rate limited, waiting {wait}s..."); time.sleep(wait); continue
-        if resp.status_code == 500:
-            wait = 30 * (attempt + 1)
-            print(f"  Server error (500), retrying in {wait}s (attempt {attempt+1}/5)...")
-            time.sleep(wait); continue
-        if not resp.ok:
-            wait = 15 * (attempt + 1)
-            print(f"  Session fetch failed: {resp.status_code}, retrying in {wait}s...")
-            time.sleep(wait); continue
-        data = resp.json()
-        return data if isinstance(data, list) else data.get("sessions", [])
-    print("  Session fetch failed after 5 attempts — will retry next run.")
+        if resp.ok:
+            data = resp.json()
+            result = data if isinstance(data, list) else data.get("sessions", [])
+            if result:
+                print("  Success with GET request")
+                return result
+    except Exception as e:
+        print(f"  GET attempt failed: {e}")
+
+    print("  All session fetch attempts failed.")
     return []
 
 def fetch_game_data(session_id):
