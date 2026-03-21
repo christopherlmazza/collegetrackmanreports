@@ -197,9 +197,13 @@ if "pitcher_names" in st.session_state and st.session_state["pitcher_names"]:
                          use_container_width=True, key="btn_summary"):
                 figures = []
                 with st.spinner("Building season summaries from local data..."):
+                    # Always load full season regardless of date filter
+                    full_season_df = load_team_data(team_name, idx_df["GameDate"].min(), idx_df["GameDate"].max())
+                    if full_season_df is None or full_season_df.empty:
+                        full_season_df = df_all
                     season_df = get_team_pitches(
-                        df_all, team_name,
-                        team_df["GameDate"].min(), team_df["GameDate"].max())
+                        full_season_df, team_name,
+                        full_season_df["GameDate"].min(), full_season_df["GameDate"].max())
                     for pname in selected_names:
                         p_season = season_df[season_df["Pitcher"] == pname].copy()
                         if p_season.empty:
@@ -220,7 +224,7 @@ if "pitcher_names" in st.session_state and st.session_state["pitcher_names"]:
                         outings = sorted(outings, key=lambda x: x[1])
                         fig = generate_season_summary(
                             pname, outings,
-                            team_df["GameDate"].min(), team_df["GameDate"].max())
+                            season_df["GameDate"].min(), season_df["GameDate"].max())
                         if fig:
                             figures.append((pname, fig))
                 if figures:
