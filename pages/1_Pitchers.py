@@ -198,7 +198,8 @@ if "pitcher_names" in st.session_state and st.session_state["pitcher_names"]:
                 figures = []
                 with st.spinner("Building season summaries from local data..."):
                     # Always load full season regardless of date filter
-                    full_season_df = load_team_data(team_name, idx_df["GameDate"].min(), idx_df["GameDate"].max())
+                    _all_dates = idx_df["GameDate"].dropna()
+                    full_season_df = load_team_data(team_name, _all_dates.min(), _all_dates.max())
                     if full_season_df is None or full_season_df.empty:
                         full_season_df = df_all
                     season_df = get_team_pitches(
