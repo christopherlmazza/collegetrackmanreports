@@ -239,7 +239,7 @@ def draw_zone(ax, data, title, pts):
         color = pc(pt)
         for call, grp in s.groupby("PitchCall"):
             marker, filled = outcome_markers.get(call, ("o", False))
-            x = grp["PlateLocSide"]; y = grp["PlateLocHeight"]
+            x = -grp["PlateLocSide"]; y = grp["PlateLocHeight"]  # mirror to catcher POV
             valid = x.notna() & y.notna()
             if not valid.any(): continue
             if filled:
@@ -1005,7 +1005,7 @@ def generate_heatmap(p, pitch_type, metric="run_value"):
                              closed=True, fc="#CCCCCC", ec="black", lw=.5, alpha=0.5, zorder=10))
 
         if len(side_data) >= 5:
-            x = side_data["PlateLocSide"].values
+            x = -side_data["PlateLocSide"].values  # mirror to catcher POV
             y = side_data["PlateLocHeight"].values
             xi = np.linspace(-2.5, 2.5, 80)
             yi = np.linspace(-0.5, 5.0, 80)
@@ -1290,7 +1290,8 @@ def draw_zone_heatmap(ax, df, stat="ev", title="EV Heatmap", filter_df=None):
         for j in range(6):
             x0, x1 = x_bins[j], x_bins[j+1]
             y0, y1 = y_bins[i], y_bins[i+1]
-            loc_mask = (use_df["PlateLocSide"].between(x0, x1) &
+            # Mirror PlateLocSide to catcher POV (negate)
+            loc_mask = ((-use_df["PlateLocSide"]).between(x0, x1) &
                         use_df["PlateLocHeight"].between(y0, y1))
             cell_all = use_df[loc_mask]
             cell_bip = bip[bip["PlateLocSide"].between(x0, x1) &
@@ -1649,7 +1650,7 @@ def generate_hitter_heatmap(batter_df, metric="ev", pitch_type=None,
                          closed=True, fc="#CCCCCC", ec="#333333", lw=.8,
                          alpha=0.7, zorder=10))
 
-    x = plot_df["PlateLocSide"].values
+    x = -plot_df["PlateLocSide"].values  # mirror to catcher POV
     y = plot_df["PlateLocHeight"].values
     xi = np.linspace(-2.5, 2.5, 100)
     yi = np.linspace(-0.5, 5.0, 100)
