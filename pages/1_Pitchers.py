@@ -30,9 +30,11 @@ with st.sidebar:
     # Ensure they are proper date objects not NaT
     if hasattr(min_date, "date"): min_date = min_date.date()
     if hasattr(max_date, "date"): max_date = max_date.date()
+    # Clamp default value so it never goes below min_date
+    default_from = max(min_date, max_date - timedelta(days=7))
     col1, col2 = st.columns(2)
     with col1:
-        date_from = st.date_input("From", value=max_date - timedelta(days=7),
+        date_from = st.date_input("From", value=default_from,
                                    min_value=min_date, max_value=max_date)
     with col2:
         date_to = st.date_input("To", value=max_date,
