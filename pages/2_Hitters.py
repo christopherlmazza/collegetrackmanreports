@@ -251,3 +251,4 @@ with tab_heatmaps:
             data=st.session_state["_hitter_hm_bytes"],
             file_name=f"Heatmap_{st.session_state.get('_hitter_hm_label','hitter')}.png",
             mime="image/png", use_container_width=True)
+

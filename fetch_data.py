@@ -31,7 +31,7 @@ from collections import defaultdict
 # ===========================================================================
 BASE_URL      = "https://dataapi.trackmanbaseball.com"
 TOKEN_URL     = "https://login.trackman.com/connect/token"
-# Credentials loaded from .streamlit/secrets.toml (never hardcoded in repo)
+
 def _load_secrets():
     paths = [
         os.path.join(os.path.dirname(os.path.abspath(__file__)), ".streamlit", "secrets.toml"),
@@ -54,6 +54,7 @@ CLIENT_SECRET = _secrets.get("TRACKMAN_CLIENT_SECRET", "")
 if not CLIENT_ID or not CLIENT_SECRET:
     print("ERROR: TRACKMAN_CLIENT_ID and TRACKMAN_CLIENT_SECRET not found in .streamlit/secrets.toml")
     sys.exit(1)
+
 SEASON_START  = date(2026, 3, 15)
 
 DATA_DIR    = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
@@ -115,13 +116,6 @@ def is_d1_session(s):
 # API FETCHERS
 # ===========================================================================
 def fetch_sessions(date_from_str, date_to_str):
-    """
-    Try multiple approaches to get sessions:
-    1. POST with sessionType (original)
-    2. POST without sessionType
-    3. POST with different field names
-    4. GET request instead of POST
-    """
     headers = get_headers()
     if not headers: return []
 
@@ -137,7 +131,6 @@ def fetch_sessions(date_from_str, date_to_str):
             try:
                 headers = get_headers()
                 if not headers: return []
-
                 resp = requests.post(
                     f"{BASE_URL}/api/v1/discovery/game/sessions",
                     headers=headers,
@@ -149,7 +142,7 @@ def fetch_sessions(date_from_str, date_to_str):
                     print(f"  Rate limited, waiting {wait}s..."); time.sleep(wait); continue
                 if resp.status_code == 500:
                     print(f"  500 error with payload variant {i+1}, trying next...")
-                    break  # try next payload
+                    break
                 if resp.ok:
                     data = resp.json()
                     result = data if isinstance(data, list) else data.get("sessions", [])
@@ -163,7 +156,6 @@ def fetch_sessions(date_from_str, date_to_str):
                 print(f"  Exception: {e}")
                 time.sleep(15)
 
-    # Last resort — try GET with query params
     try:
         headers = get_headers()
         resp = requests.get(
@@ -306,8 +298,6 @@ def resolve_pt(row):
     return "Other"
 
 def optimize_df(df):
-    """Downcast floats and categorize to save memory."""
-    # Normalize GameDate to string YYYY-MM-DD to avoid mixed type issues
     if "GameDate" in df.columns:
         df["GameDate"] = pd.to_datetime(df["GameDate"], errors="coerce").dt.strftime("%Y-%m-%d")
     for col in df.select_dtypes(include=["float64"]).columns:
@@ -358,7 +348,6 @@ def migrate_legacy():
     migrated = 0
     for gdate, group in df.groupby("GameDate"):
         if pd.isna(gdate): continue
-        # Normalize date to YYYY-MM-DD string safe for filenames
         try:
             gdate_str = pd.Timestamp(gdate).strftime("%Y-%m-%d")
         except Exception:
@@ -422,6 +411,7 @@ def main():
         if d1:
             save_index(d1)
         _write_timestamp()
+        _git_push()
         return
 
     print(f"\n[2/3] Fetching pitch data ({len(new_sessions)} games)...")
@@ -429,7 +419,6 @@ def main():
     sessions_by_date = defaultdict(list)
     for s in new_sessions:
         raw = (s.get("gameDateLocal") or s.get("gameDateUtc") or "")[:10]
-        # Normalize to YYYY-MM-DD regardless of source format
         try:
             gdate = pd.to_datetime(raw).strftime("%Y-%m-%d")
         except Exception:
@@ -477,7 +466,10 @@ def main():
     print(f"\n[3/3] Saving index...")
     save_index(d1)
     _write_timestamp()
+
     print(f"\n  Done! {len(new_sessions)} new games added.")
+    _git_push()
+
 
 def _write_timestamp():
     ts_path = os.path.join(DATA_DIR, "last_updated.json")
@@ -487,44 +479,59 @@ def _write_timestamp():
             "last_updated_date": date.today().isoformat(),
         }, f, indent=2)
 
+
 def _git_push():
     import subprocess
     repo_dir = os.path.dirname(os.path.abspath(__file__))
     print(f"\n  Pushing data to GitHub from {repo_dir}...")
 
-    cmds = [
-        ["git", "add", "data/by_date/", "data/index.parquet", "data/last_updated.json"],
-        ["git", "commit", "-m", f"data update {date.today()}"],
-        ["git", "pull", "--no-edit"],
-        ["git", "push"],
-    ]
-    for cmd in cmds:
-        print(f"  Running: {' '.join(cmd)}")
-        result = subprocess.run(cmd, cwd=repo_dir,
-                                capture_output=True, text=True)
+    def run(cmd):
+        result = subprocess.run(cmd, cwd=repo_dir, capture_output=True, text=True)
         out = result.stdout.strip()
         err = result.stderr.strip()
         if out: print(f"  stdout: {out}")
         if err: print(f"  stderr: {err}")
-        if result.returncode != 0:
-            if "nothing to commit" in out + err:
-                print("  Nothing new to push."); return
-            if "Everything up-to-date" in out + err:
-                print("  Already up to date."); return
-            # Try pulling first then pushing
-            print("  Push failed, trying pull then push...")
-            pull = subprocess.run(["git", "pull", "--rebase"],
-                                   cwd=repo_dir, capture_output=True, text=True)
-            print(f"  pull: {pull.stdout.strip()} {pull.stderr.strip()}")
-            retry = subprocess.run(["git", "push"],
-                                    cwd=repo_dir, capture_output=True, text=True)
-            if retry.returncode == 0:
-                print("  Pushed to GitHub after pull.")
-            else:
-                print(f"  Push failed: {retry.stderr.strip()}")
+        return result.returncode, out + err
+
+    # Step 1: pull first so we're up to date before committing
+    print("  Pulling latest from remote...")
+    code, msg = run(["git", "pull", "--no-edit"])
+    if code != 0 and "Already up to date" not in msg:
+        print(f"  WARNING: git pull had issues, continuing anyway...")
+
+    # Step 2: force-add data files (-f overrides any gitignore rules)
+    print("  Staging data files...")
+    run(["git", "add", "-f",
+         "data/by_date/",
+         "data/index.parquet",
+         "data/last_updated.json"])
+
+    # Step 3: commit
+    print("  Committing...")
+    code, msg = run(["git", "commit", "-m", f"data update {date.today()}"])
+    if code != 0:
+        if "nothing to commit" in msg:
+            print("  Nothing new to commit.")
             return
-    print("  Pushed to GitHub.")
+        print(f"  Commit failed: {msg}")
+        return
+
+    # Step 4: push
+    print("  Pushing...")
+    code, msg = run(["git", "push"])
+    if code == 0:
+        print("  Successfully pushed to GitHub.")
+    else:
+        # One retry: pull --rebase then push again
+        print("  Push failed, trying rebase and retry...")
+        run(["git", "pull", "--rebase"])
+        code, msg = run(["git", "push"])
+        if code == 0:
+            print("  Successfully pushed to GitHub after rebase.")
+        else:
+            print(f"  Push failed after retry: {msg}")
+            print("  Data is saved locally. Run 'git push' manually to sync.")
+
 
 if __name__ == "__main__":
     main()
-    _git_push()

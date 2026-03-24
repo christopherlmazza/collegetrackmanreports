@@ -1,3 +1,18 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 """
 utils.py — Shared functions for TrackMan Baseball Reports
 All chart functions, data loaders, analytics library, and AI chatbot
@@ -225,7 +240,7 @@ def draw_zone(ax, data, title, pts):
     ax.add_patch(Rectangle((-0.95, 1.6), 1.9, 1.9, fill=False, ec="#333333", lw=1.5, alpha=0.8, zorder=3))
     ax.add_patch(Rectangle((-0.95, 1.6), 1.9, 1.9, fill=True, fc="#E8EDF2", alpha=0.3, zorder=2))
     ax.add_patch(Rectangle((-1.4, 1.2), 2.8, 2.7, fill=False, ec="#AAAAAA", lw=0.7, ls="--", alpha=0.4, zorder=2))
-    ax.add_patch(Polygon([(-.708, .15), (.708, .15), (.708, .35), (0, .55), (-.708, .35)],
+    ax.add_patch(Polygon([(-.708, .55), (.708, .55), (.708, .35), (0, .15), (-.708, .35)],
                          closed=True, fc="none", ec=MUTED_TEXT, lw=.7, alpha=0.4))
     outcome_markers = {
         "BallCalled": ("o", False), "BallinDirt": ("o", False), "BallIntentional": ("o", False),
@@ -239,7 +254,7 @@ def draw_zone(ax, data, title, pts):
         color = pc(pt)
         for call, grp in s.groupby("PitchCall"):
             marker, filled = outcome_markers.get(call, ("o", False))
-            x = grp["PlateLocSide"]; y = grp["PlateLocHeight"]
+            x = -grp["PlateLocSide"]; y = grp["PlateLocHeight"]  # mirror to catcher POV
             valid = x.notna() & y.notna()
             if not valid.any(): continue
             if filled:
@@ -1001,11 +1016,11 @@ def generate_heatmap(p, pitch_type, metric="run_value"):
         side_data = sub[sub["BatterSide"] == side]
 
         ax.add_patch(Rectangle((-0.95, 1.6), 1.9, 1.9, fill=False, ec="black", lw=1.5, zorder=10))
-        ax.add_patch(Polygon([(-.708, .15), (.708, .15), (.708, .35), (0, .55), (-.708, .35)],
+        ax.add_patch(Polygon([(-.708, .55), (.708, .55), (.708, .35), (0, .15), (-.708, .35)],
                              closed=True, fc="#CCCCCC", ec="black", lw=.5, alpha=0.5, zorder=10))
 
         if len(side_data) >= 5:
-            x = side_data["PlateLocSide"].values
+            x = -side_data["PlateLocSide"].values  # mirror to catcher POV
             y = side_data["PlateLocHeight"].values
             xi = np.linspace(-2.5, 2.5, 80)
             yi = np.linspace(-0.5, 5.0, 80)
@@ -1290,7 +1305,8 @@ def draw_zone_heatmap(ax, df, stat="ev", title="EV Heatmap", filter_df=None):
         for j in range(6):
             x0, x1 = x_bins[j], x_bins[j+1]
             y0, y1 = y_bins[i], y_bins[i+1]
-            loc_mask = (use_df["PlateLocSide"].between(x0, x1) &
+            # Mirror PlateLocSide to catcher POV (negate)
+            loc_mask = ((-use_df["PlateLocSide"]).between(x0, x1) &
                         use_df["PlateLocHeight"].between(y0, y1))
             cell_all = use_df[loc_mask]
             cell_bip = bip[bip["PlateLocSide"].between(x0, x1) &
@@ -1343,8 +1359,8 @@ def draw_zone_heatmap(ax, df, stat="ev", title="EV Heatmap", filter_df=None):
     for yline in [2.167, 2.833]:
         ax.plot([-0.83, 0.83], [yline, yline],
                 color="#111111", lw=1.0, ls="--", alpha=0.6, zorder=4)
-    # Home plate
-    ax.add_patch(Polygon([(-.708,.15),(.708,.15),(.708,.35),(0,.55),(-.708,.35)],
+    # Home plate — tip points DOWN (toward viewer = catcher POV)
+    ax.add_patch(Polygon([(-.708,.55),(.708,.55),(.708,.35),(0,.15),(-.708,.35)],
                  closed=True, fc="#CCCCCC", ec="#222222", lw=1.2, alpha=0.85, zorder=5))
 
     ax.set_xlim(-1.5, 1.5); ax.set_ylim(0.8, 4.0)
@@ -1644,12 +1660,12 @@ def generate_hitter_heatmap(batter_df, metric="ev", pitch_type=None,
     for yline in [2.167, 2.833]:
         ax.plot([-0.95, 0.95], [yline, yline],
                 color="#333333", lw=0.5, ls="--", alpha=0.5, zorder=9)
-    # Home plate
-    ax.add_patch(Polygon([(-.708,.15),(.708,.15),(.708,.35),(0,.55),(-.708,.35)],
+    # Home plate — tip points DOWN (toward viewer = catcher POV)
+    ax.add_patch(Polygon([(-.708,.55),(.708,.55),(.708,.35),(0,.15),(-.708,.35)],
                          closed=True, fc="#CCCCCC", ec="#333333", lw=.8,
                          alpha=0.7, zorder=10))
 
-    x = plot_df["PlateLocSide"].values
+    x = -plot_df["PlateLocSide"].values  # mirror to catcher POV
     y = plot_df["PlateLocHeight"].values
     xi = np.linspace(-2.5, 2.5, 100)
     yi = np.linspace(-0.5, 5.0, 100)
