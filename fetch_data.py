@@ -55,7 +55,10 @@ if not CLIENT_ID or not CLIENT_SECRET:
     print("ERROR: TRACKMAN_CLIENT_ID and TRACKMAN_CLIENT_SECRET not found in .streamlit/secrets.toml")
     sys.exit(1)
 
-SEASON_START  = date(2026, 3, 15)
+# Only controls which NEW sessions are fetched from the API each run.
+# Does NOT affect what the app can display — the index always preserves
+# all historical dates regardless of this setting.
+SEASON_START = date(2026, 3, 15)
 
 DATA_DIR    = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 BY_DATE_DIR = os.path.join(DATA_DIR, "by_date")
@@ -321,19 +324,38 @@ def load_index():
     return pd.read_parquet(INDEX_PATH)
 
 def save_index(sessions):
+    """
+    Merge new sessions into the existing index.
+    Never discards old rows — historical dates are always preserved
+    regardless of what SEASON_START is set to.
+    """
     rows = []
     for s in sessions:
         rows.append({
-            "SessionID": s.get("sessionId",""),
+            "SessionID": s.get("sessionId", ""),
             "GameDate":  (s.get("gameDateLocal") or s.get("gameDateUtc") or "")[:10],
-            "HomeTeam":  s.get("homeTeam",{}).get("name",""),
-            "AwayTeam":  s.get("awayTeam",{}).get("name",""),
+            "HomeTeam":  s.get("homeTeam", {}).get("name", ""),
+            "AwayTeam":  s.get("awayTeam", {}).get("name", ""),
         })
-    df = pd.DataFrame(rows).drop_duplicates("SessionID")
-    df["GameDate"] = pd.to_datetime(df["GameDate"], errors="coerce").dt.date
-    df.to_parquet(INDEX_PATH, index=False)
-    print(f"  Index saved: {len(df)} games")
-    return df
+    new_df = pd.DataFrame(rows)
+    new_df["GameDate"] = pd.to_datetime(new_df["GameDate"], errors="coerce").dt.date
+
+    # Load existing index and merge — never discard old rows
+    if os.path.exists(INDEX_PATH):
+        existing_df = pd.read_parquet(INDEX_PATH)
+        existing_df["GameDate"] = pd.to_datetime(existing_df["GameDate"], errors="coerce").dt.date
+        combined = pd.concat([existing_df, new_df], ignore_index=True)
+    else:
+        combined = new_df
+
+    combined = (combined
+                .drop_duplicates(subset=["SessionID"])
+                .sort_values("GameDate")
+                .reset_index(drop=True))
+    combined.to_parquet(INDEX_PATH, index=False)
+    print(f"  Index saved: {len(combined)} games "
+          f"({combined['GameDate'].min()} to {combined['GameDate'].max()})")
+    return combined
 
 # ===========================================================================
 # MIGRATION
@@ -493,20 +515,20 @@ def _git_push():
         if err: print(f"  stderr: {err}")
         return result.returncode, out + err
 
-    # Step 1: pull first so we're up to date before committing
+    # Pull first so we're up to date before committing
     print("  Pulling latest from remote...")
     code, msg = run(["git", "pull", "--no-edit"])
     if code != 0 and "Already up to date" not in msg:
         print(f"  WARNING: git pull had issues, continuing anyway...")
 
-    # Step 2: force-add data files (-f overrides any gitignore rules)
+    # Force-add data files (-f overrides any gitignore rules)
     print("  Staging data files...")
     run(["git", "add", "-f",
          "data/by_date/",
          "data/index.parquet",
          "data/last_updated.json"])
 
-    # Step 3: commit
+    # Commit
     print("  Committing...")
     code, msg = run(["git", "commit", "-m", f"data update {date.today()}"])
     if code != 0:
@@ -516,7 +538,7 @@ def _git_push():
         print(f"  Commit failed: {msg}")
         return
 
-    # Step 4: push
+    # Push
     print("  Pushing...")
     code, msg = run(["git", "push"])
     if code == 0:
