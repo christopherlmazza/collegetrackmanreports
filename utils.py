@@ -637,8 +637,10 @@ def get_teams(df):
 def get_team_pitches(df, team_name, date_from, date_to):
     """Normalizes GameDate type to prevent datetime/date comparison errors."""
     df = df.copy()
-    df["GameDate"] = pd.to_datetime(df["GameDate"], errors="coerce").dt.date
-    date_mask = (df["GameDate"] >= date_from) & (df["GameDate"] <= date_to)
+    df["GameDate"] = pd.to_datetime(df["GameDate"], errors="coerce")
+    date_from_ts = pd.Timestamp(date_from)
+    date_to_ts   = pd.Timestamp(date_to) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+    date_mask = (df["GameDate"] >= date_from_ts) & (df["GameDate"] <= date_to_ts)
     mask = date_mask & (
         ((df["HomeTeam"] == team_name) & (df["TopBottom"] == "Top")) |
         ((df["AwayTeam"] == team_name) & (df["TopBottom"] == "Bottom"))
@@ -1337,8 +1339,10 @@ def spray_direction(angle):
 def get_team_batting(df, team_name, date_from, date_to):
     """Normalizes GameDate type to prevent datetime/date comparison errors."""
     df = df.copy()
-    df["GameDate"] = pd.to_datetime(df["GameDate"], errors="coerce").dt.date
-    date_mask = (df["GameDate"] >= date_from) & (df["GameDate"] <= date_to)
+    df["GameDate"] = pd.to_datetime(df["GameDate"], errors="coerce")
+    date_from_ts = pd.Timestamp(date_from)
+    date_to_ts   = pd.Timestamp(date_to) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+    date_mask = (df["GameDate"] >= date_from_ts) & (df["GameDate"] <= date_to_ts)
     mask = date_mask & (
         ((df["HomeTeam"] == team_name) & (df["TopBottom"] == "Bottom")) |
         ((df["AwayTeam"] == team_name) & (df["TopBottom"] == "Top"))
