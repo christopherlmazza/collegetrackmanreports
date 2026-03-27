@@ -18,9 +18,9 @@ from scipy.stats import gaussian_kde
 from datetime import date, timedelta, datetime
 warnings.filterwarnings("ignore")
 
-# ===========================================================================
+# =====
 # CONSTANTS
-# ===========================================================================
+# =====
 STRIKE_CALLS = {"StrikeCalled", "StrikeSwinging", "FoulBallNotFieldable", "InPlay"}
 SWING_CALLS  = {"StrikeSwinging", "FoulBallNotFieldable", "InPlay"}
 PITCH_COLORS = {
@@ -39,9 +39,9 @@ MUTED_TEXT   = "#6B7280"
 AUTO_CORRECT_PITCHES = True
 MIN_CLUSTER_SIZE     = 3
 
-# ===========================================================================
+# =====
 # D1 PERCENTILE COLOR GRADING
-# ===========================================================================
+# =====
 GRADE_CMAP = LinearSegmentedColormap.from_list("grade", [
     (0.0, "#4575B4"), (0.25, "#91BFDB"), (0.5, "#FFFFFF"),
     (0.75, "#FDB863"), (1.0, "#E66101"),
@@ -93,9 +93,9 @@ def grade_color(pitch_type, stat_name, value, higher_is_better=True):
     if not higher_is_better: norm = 1.0 - norm
     return GRADE_CMAP(norm)
 
-# ===========================================================================
+# =====
 # UTILITY FUNCTIONS
-# ===========================================================================
+# =====
 def pc(pt): return PITCH_COLORS.get(pt, "#C8C8C8")
 
 def sg(d, *keys, default=None):
@@ -213,9 +213,9 @@ def fmt(s, fn="mean", d=1):
     r = v.mean() if fn == "mean" else v.max()
     return f"{r:.{d}f}"
 
-# ===========================================================================
+# =====
 # UI / STYLING FUNCTIONS
-# ===========================================================================
+# =====
 
 def inject_app_styles():
     st.markdown("""
@@ -450,9 +450,9 @@ def format_number(value, digits=1, suffix=""):
     return f"{float(value):,.{digits}f}{suffix}"
 
 
-# ===========================================================================
+# =====
 # DRAWING FUNCTIONS
-# ===========================================================================
+# =====
 def draw_zone(ax, data, title, pts):
     ax.set_facecolor(PANEL_COLOR)
     ax.add_patch(Rectangle((-0.95, 1.6), 1.9, 1.9, fill=False, ec="#333333", lw=1.5, alpha=0.8, zorder=3))
@@ -538,9 +538,9 @@ def draw_release(ax, data, pts):
         ax.set_xlim(rs_c - pad, rs_c + pad); ax.set_ylim(rh_c - pad, rh_c + pad)
     ax.set_aspect("equal")
 
-# ===========================================================================
+# =====
 # DATA LOADING — reads from data/by_date/ partitioned parquets
-# ===========================================================================
+# =====
 DATA_DIR    = os.path.join(os.path.dirname(os.path.abspath(__file__)) if "__file__" in dir() else os.getcwd(), "data")
 BY_DATE_DIR = os.path.join(DATA_DIR, "by_date")
 INDEX_PATH  = os.path.join(DATA_DIR, "index.parquet")
@@ -721,9 +721,9 @@ def identify_team_code(df, team_name, ht, at):
         if not bot_pitchers.empty: return bot_pitchers.index[0]
     return None
 
-# ===========================================================================
+# =====
 # GENERATE ONE PITCHER PAGE
-# ===========================================================================
+# =====
 def generate_pitcher_page(p, pname, gdate, opp):
     N = len(p)
     if N == 0: return None
@@ -876,9 +876,9 @@ def generate_pitcher_page(p, pname, gdate, opp):
 
     return fig
 
-# ===========================================================================
+# =====
 # SEASON SUMMARY FUNCTIONS
-# ===========================================================================
+# =====
 def calc_fip(k, bb, hbp_ct, hr_ct, ip_str):
     parts = ip_str.split(".")
     ip = int(parts[0]) + int(parts[1]) / 3 if len(parts) == 2 else float(ip_str)
@@ -1131,9 +1131,9 @@ def generate_season_summary(pitcher_name, outings, date_from, date_to):
 
     return fig
 
-# ===========================================================================
+# =====
 # HEATMAP FUNCTIONS
-# ===========================================================================
+# =====
 RUN_VALUES = {
     "StrikeSwinging": -0.065, "StrikeCalled": -0.038, "FoulBallNotFieldable": -0.025,
     "BallCalled": 0.032, "BallinDirt": 0.032, "BallIntentional": 0.032,
@@ -1258,9 +1258,9 @@ def generate_heatmap(p, pitch_type, metric="run_value"):
                  color=TEXT_COLOR, y=0.98)
     return fig
 
-# ===========================================================================
+# =====
 # HELPER: Parse game date from session
-# ===========================================================================
+# =====
 def parse_session_date(session, fallback_date):
     for field in ["gameDateLocal", "gameDateUtc"]:
         val = session.get(field, "")
@@ -1272,9 +1272,9 @@ def parse_session_date(session, fallback_date):
     return fallback_date
 
 
-# ===========================================================================
+# =====
 # HITTER CARD FUNCTIONS
-# ===========================================================================
+# =====
 def load_hitter_percentiles():
     try:
         base = os.path.dirname(os.path.abspath(__file__))
@@ -1902,8 +1902,8 @@ def generate_hitter_page(batter_df, batter_name, game_date, opponent,
 
     return fig
 
-<<<<<<< HEAD
-# ===========================================================================
-=======
-# ===========================================================================
->>>>>>> 2f7ae6df998db134dfb28137d7c758bca32fb4ad
+
+# =====
+
+# =====
+
