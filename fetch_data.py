@@ -515,11 +515,19 @@ def _git_push():
         if err: print(f"  stderr: {err}")
         return result.returncode, out + err
 
-    # Pull first so we're up to date before committing
+    # Stash any local changes so pull cannot fail due to modified files
+    print("  Stashing local changes...")
+    run(["git", "stash"])
+
+    # Pull latest from remote
     print("  Pulling latest from remote...")
     code, msg = run(["git", "pull", "--no-edit"])
     if code != 0 and "Already up to date" not in msg:
         print(f"  WARNING: git pull had issues, continuing anyway...")
+
+    # Restore stashed changes
+    print("  Restoring stashed changes...")
+    run(["git", "stash", "pop"])
 
     # Force-add data files (-f overrides any gitignore rules)
     print("  Staging data files...")
@@ -544,9 +552,11 @@ def _git_push():
     if code == 0:
         print("  Successfully pushed to GitHub.")
     else:
-        # One retry: pull --rebase then push again
+        # Retry: stash, rebase, pop, push
         print("  Push failed, trying rebase and retry...")
+        run(["git", "stash"])
         run(["git", "pull", "--rebase"])
+        run(["git", "stash", "pop"])
         code, msg = run(["git", "push"])
         if code == 0:
             print("  Successfully pushed to GitHub after rebase.")
