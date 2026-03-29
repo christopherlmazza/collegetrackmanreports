@@ -208,7 +208,11 @@ def fetch_game_data(session_id):
 def flatten_game(plays_raw, balls_raw, session):
     ht         = session.get("homeTeam", {}).get("name", "")
     at         = session.get("awayTeam", {}).get("name", "")
-    game_date  = (session.get("gameDateLocal") or session.get("gameDateUtc") or "")[:10]
+    _date_raw = session.get("gameDateUtc") or session.get("gameDateLocal") or ""
+    try:
+        game_date = pd.to_datetime(_date_raw).strftime("%Y-%m-%d")
+    except Exception:
+        game_date = ""
     session_id = session.get("sessionId", "")
 
     rows = []
@@ -333,7 +337,10 @@ def save_index(sessions):
     for s in sessions:
         rows.append({
             "SessionID": s.get("sessionId", ""),
-            "GameDate":  (s.get("gameDateLocal") or s.get("gameDateUtc") or "")[:10],
+            "GameDate":  pd.to_datetime(
+                s.get("gameDateUtc") or s.get("gameDateLocal") or "",
+                errors="coerce"
+            ).strftime("%Y-%m-%d") if (s.get("gameDateUtc") or s.get("gameDateLocal")) else "",
             "HomeTeam":  s.get("homeTeam", {}).get("name", ""),
             "AwayTeam":  s.get("awayTeam", {}).get("name", ""),
         })
