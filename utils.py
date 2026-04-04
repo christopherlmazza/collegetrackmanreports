@@ -1002,11 +1002,11 @@ def generate_season_summary(pitcher_name, outings, date_from, date_to):
     izwp = round(iz_wh_ct / iz_sw * 100, 1) if iz_sw else 0
     pts = p["PitchType"].value_counts().index.tolist()
 
-    fig = plt.figure(figsize=(26, 24), facecolor=BG_COLOR)
+    fig = plt.figure(figsize=(26, 30), facecolor=BG_COLOR)
     gs = GridSpec(5, 3, figure=fig,
-                  height_ratios=[.045, .03, .24, .20, .485],
+                  height_ratios=[.035, .025, .20, .35, .39],
                   width_ratios=[1, 1.2, 1.2],
-                  hspace=.22, wspace=.22,
+                  hspace=.18, wspace=.22,
                   top=0.96, bottom=0.02, left=0.04, right=0.97)
 
     ax = fig.add_subplot(gs[0, :]); ax.set_facecolor(BG_COLOR); ax.axis("off")
