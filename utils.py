@@ -732,11 +732,11 @@ def draw_count_tree(ax, p, pts):
     # Map (balls, strikes) to normalized figure position (x, y) as fractions of axes
     positions = {
         (0,0): (0.50, 0.93),
-        (1,0): (0.63, 0.81), (0,1): (0.37, 0.81),
-        (2,0): (0.76, 0.69), (1,1): (0.50, 0.69), (0,2): (0.24, 0.69),
-        (3,0): (0.87, 0.57), (2,1): (0.63, 0.57), (1,2): (0.37, 0.57),
-        (3,1): (0.75, 0.43), (2,2): (0.50, 0.43),
-        (3,2): (0.50, 0.28),
+        (1,0): (0.60, 0.83), (0,1): (0.40, 0.83),
+        (2,0): (0.70, 0.73), (1,1): (0.50, 0.73), (0,2): (0.30, 0.73),
+        (3,0): (0.80, 0.63), (2,1): (0.60, 0.63), (1,2): (0.40, 0.63),
+        (3,1): (0.70, 0.50), (2,2): (0.50, 0.50),
+        (3,2): (0.50, 0.35),
     }
     edges = [
         ((0,0),(1,0)),((0,0),(0,1)),
@@ -824,11 +824,11 @@ def generate_pitcher_page(p, pname, gdate, opp):
 
     pts = p["PitchType"].value_counts().index.tolist()
 
-    fig = plt.figure(figsize=(26, 22), facecolor=BG_COLOR)
+    fig = plt.figure(figsize=(26, 28), facecolor=BG_COLOR)
     gs = GridSpec(5, 4, figure=fig,
-                  height_ratios=[.045, .015, .28, .22, .435],
+                  height_ratios=[.035, .012, .22, .38, .35],
                   width_ratios=[1, 1, 1, 0.65],
-                  hspace=.22, wspace=.18,
+                  hspace=.18, wspace=.18,
                   top=0.96, bottom=0.02, left=0.03, right=0.97)
 
     ax = fig.add_subplot(gs[0, :]); ax.set_facecolor(BG_COLOR); ax.axis("off")
