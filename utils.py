@@ -637,10 +637,8 @@ def get_teams(df):
 def get_team_pitches(df, team_name, date_from, date_to):
     """Normalizes GameDate type to prevent datetime/date comparison errors."""
     df = df.copy()
-    df["GameDate"] = pd.to_datetime(df["GameDate"], errors="coerce")
-    date_from_ts = pd.Timestamp(date_from)
-    date_to_ts   = pd.Timestamp(date_to) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
-    date_mask = (df["GameDate"] >= date_from_ts) & (df["GameDate"] <= date_to_ts)
+    df["GameDate"] = pd.to_datetime(df["GameDate"], errors="coerce").dt.date
+    date_mask = (df["GameDate"] >= date_from) & (df["GameDate"] <= date_to)
     mask = date_mask & (
         ((df["HomeTeam"] == team_name) & (df["TopBottom"] == "Top")) |
         ((df["AwayTeam"] == team_name) & (df["TopBottom"] == "Bottom"))
@@ -723,6 +721,80 @@ def identify_team_code(df, team_name, ht, at):
         if not bot_pitchers.empty: return bot_pitchers.index[0]
     return None
 
+
+def draw_count_tree(ax, p, pts):
+    """Pie-chart count tree showing pitch mix at each count."""
+    ax.set_facecolor(BG_COLOR)
+    ax.axis("off")
+    ax.set_title("Pitch Usage by Count", fontsize=13, fontweight="bold", color=TEXT_COLOR, pad=6)
+
+    # Use inset axes for each count so pies are always circular
+    # Map (balls, strikes) to normalized figure position (x, y) as fractions of axes
+    positions = {
+        (0,0): (0.50, 0.93),
+        (1,0): (0.60, 0.83), (0,1): (0.40, 0.83),
+        (2,0): (0.70, 0.73), (1,1): (0.50, 0.73), (0,2): (0.30, 0.73),
+        (3,0): (0.80, 0.63), (2,1): (0.60, 0.63), (1,2): (0.40, 0.63),
+        (3,1): (0.70, 0.50), (2,2): (0.50, 0.50),
+        (3,2): (0.50, 0.35),
+    }
+    edges = [
+        ((0,0),(1,0)),((0,0),(0,1)),
+        ((1,0),(2,0)),((1,0),(1,1)),
+        ((0,1),(1,1)),((0,1),(0,2)),
+        ((2,0),(3,0)),((2,0),(2,1)),
+        ((1,1),(2,1)),((1,1),(1,2)),
+        ((0,2),(1,2)),
+        ((3,0),(3,1)),((2,1),(3,1)),
+        ((2,1),(2,2)),((1,2),(2,2)),
+        ((3,1),(3,2)),((2,2),(3,2)),
+    ]
+    # Draw connecting lines in axes coordinates
+    for (b1,s1),(b2,s2) in edges:
+        x1,y1 = positions[(b1,s1)]; x2,y2 = positions[(b2,s2)]
+        ax.plot([x1,x2],[y1,y2], color=GRID_COLOR, lw=0.8,
+                transform=ax.transAxes, zorder=1, clip_on=False)
+
+    pie_size = 0.19  # fraction of axes width/height for each pie inset
+
+    for (balls, strikes), (cx, cy) in positions.items():
+        sub = p[(p["Balls"] == balls) & (p["Strikes"] == strikes)]
+        n = len(sub)
+
+        # Create inset axes centered at (cx, cy) in axes fraction coords
+        ins = ax.inset_axes([cx - pie_size/2, cy - pie_size/2, pie_size, pie_size])
+        ins.set_aspect("equal")
+        ins.axis("off")
+
+        if n == 0:
+            ins.pie([1], colors=["#E8E8E8"], startangle=90)
+        else:
+            counts = sub["PitchType"].value_counts()
+            sizes  = [counts.get(pt, 0) for pt in pts]
+            colors = [pc(pt) for pt in pts]
+            filtered = [(s, c) for s, c in zip(sizes, colors) if s > 0]
+            if filtered:
+                szf, clf = zip(*filtered)
+                ins.pie(szf, colors=clf, startangle=90,
+                        wedgeprops={"linewidth": 0.4, "edgecolor": "white"})
+
+        # Count label above
+        ax.text(cx, cy + pie_size/2 + 0.008, f"{balls}-{strikes}",
+                transform=ax.transAxes, ha="center", va="bottom",
+                fontsize=12, color=TEXT_COLOR, fontweight="bold")
+        # n label below
+        if n > 0:
+            ax.text(cx, cy - pie_size/2 - 0.008, f"n={n}",
+                    transform=ax.transAxes, ha="center", va="top",
+                    fontsize=10, color=MUTED_TEXT)
+
+    # Legend
+    for pt in pts:
+        ax.scatter([], [], c=pc(pt), s=80, label=pt)
+    ax.legend(loc="lower left", fontsize=12, frameon=False,
+              labelcolor=TEXT_COLOR, ncol=min(len(pts), 6),
+              bbox_to_anchor=(0.0, 0.18))
+
 # ===========================================================================
 # GENERATE ONE PITCHER PAGE
 # ===========================================================================
@@ -752,9 +824,9 @@ def generate_pitcher_page(p, pname, gdate, opp):
 
     pts = p["PitchType"].value_counts().index.tolist()
 
-    fig = plt.figure(figsize=(26, 16), facecolor=BG_COLOR)
-    gs = GridSpec(4, 4, figure=fig,
-                  height_ratios=[.06, .02, .42, .50],
+    fig = plt.figure(figsize=(26, 28), facecolor=BG_COLOR)
+    gs = GridSpec(5, 4, figure=fig,
+                  height_ratios=[.035, .012, .22, .38, .35],
                   width_ratios=[1, 1, 1, 0.65],
                   hspace=.18, wspace=.18,
                   top=0.96, bottom=0.02, left=0.03, right=0.97)
@@ -782,7 +854,8 @@ def generate_pitcher_page(p, pname, gdate, opp):
     ax_m = fig.add_subplot(gs[2, 2]); draw_mov(ax_m, p, pts)
     ax_rp = fig.add_subplot(gs[2, 3]); draw_release(ax_rp, p, pts)
 
-    ax_t = fig.add_subplot(gs[3, :]); ax_t.set_facecolor(BG_COLOR); ax_t.axis("off")
+    ax_tree = fig.add_subplot(gs[3, :]); draw_count_tree(ax_tree, p, pts)
+    ax_t = fig.add_subplot(gs[4, :]); ax_t.set_facecolor(BG_COLOR); ax_t.axis("off")
     trows = []
     grade_cells = {}
     for ri, pt in enumerate(pts):
@@ -840,22 +913,22 @@ def generate_pitcher_page(p, pname, gdate, opp):
     tbl = ax_t.table(cellText=[r[1:] for r in trows], rowLabels=[r[0] for r in trows],
                      colLabels=cols, loc="center", cellLoc="center")
     tbl.auto_set_font_size(False)
-    tbl.set_fontsize(12)
-    tbl.scale(1, 2.8)
+    tbl.set_fontsize(15)
+    tbl.scale(1, 3.2)
 
     for (row, col), cell in tbl.get_celld().items():
         cell.set_edgecolor(GRID_COLOR); cell.set_linewidth(0.6)
         if row == 0:
             cell.set_facecolor("#1E1E2E")
-            cell.set_text_props(fontweight="bold", color="white", fontfamily="monospace", fontsize=12)
+            cell.set_text_props(fontweight="bold", color="white", fontfamily="monospace", fontsize=15)
         elif col == -1:
             pitch_name = cell.get_text().get_text()
             if pitch_name == "All":
                 cell.set_facecolor("#E8E8E8")
-                cell.set_text_props(fontweight="bold", color=TEXT_COLOR, fontfamily="monospace", fontsize=13)
+                cell.set_text_props(fontweight="bold", color=TEXT_COLOR, fontfamily="monospace", fontsize=16)
             else:
                 cell.set_facecolor(pc(pitch_name))
-                cell.set_text_props(fontweight="bold", color="white", fontfamily="monospace", fontsize=13)
+                cell.set_text_props(fontweight="bold", color="white", fontfamily="monospace", fontsize=16)
         else:
             graded = False
             if (row, col) in grade_cells and row <= len(pts):
@@ -863,18 +936,18 @@ def generate_pitcher_page(p, pname, gdate, opp):
                 gc = grade_color(pt_name, stat_name, raw_val, higher_better)
                 if gc is not None:
                     cell.set_facecolor(gc)
-                    cell.set_text_props(color=TEXT_COLOR, fontfamily="monospace", fontweight="bold", fontsize=12)
+                    cell.set_text_props(color=TEXT_COLOR, fontfamily="monospace", fontweight="bold", fontsize=15)
                     graded = True
             if not graded:
                 if row == len(trows):
                     cell.set_facecolor("#E8E8E8")
-                    cell.set_text_props(color=TEXT_COLOR, fontweight="bold", fontfamily="monospace", fontsize=12)
+                    cell.set_text_props(color=TEXT_COLOR, fontweight="bold", fontfamily="monospace", fontsize=15)
                 elif row % 2 == 0:
                     cell.set_facecolor("#F4F6F9")
-                    cell.set_text_props(color=TEXT_COLOR, fontfamily="monospace", fontsize=12)
+                    cell.set_text_props(color=TEXT_COLOR, fontfamily="monospace", fontsize=15)
                 else:
                     cell.set_facecolor("#FFFFFF")
-                    cell.set_text_props(color=TEXT_COLOR, fontfamily="monospace", fontsize=12)
+                    cell.set_text_props(color=TEXT_COLOR, fontfamily="monospace", fontsize=15)
 
     return fig
 
@@ -929,9 +1002,9 @@ def generate_season_summary(pitcher_name, outings, date_from, date_to):
     izwp = round(iz_wh_ct / iz_sw * 100, 1) if iz_sw else 0
     pts = p["PitchType"].value_counts().index.tolist()
 
-    fig = plt.figure(figsize=(26, 17), facecolor=BG_COLOR)
-    gs = GridSpec(4, 3, figure=fig,
-                  height_ratios=[.06, .04, .36, .54],
+    fig = plt.figure(figsize=(26, 24), facecolor=BG_COLOR)
+    gs = GridSpec(5, 3, figure=fig,
+                  height_ratios=[.045, .03, .24, .20, .485],
                   width_ratios=[1, 1.2, 1.2],
                   hspace=.22, wspace=.22,
                   top=0.96, bottom=0.02, left=0.04, right=0.97)
@@ -955,7 +1028,7 @@ def generate_season_summary(pitcher_name, outings, date_from, date_to):
               f"PA {total_pa}   ·   P {N}   ·   H {total_hits + total_hr}   ·   HR {total_hr}   ·   "
               f"K {total_k}   ·   BB {total_bb}   ·   {len(outings)} outing(s)")
     ax.text(.5, .7, banner, ha="center", va="center", fontsize=14, color=TEXT_COLOR, family="monospace", fontweight="bold")
-    ax.text(.5, .2, f"{date_from} to {date_to}     |     " + "  /  ".join(outing_details),
+    ax.text(.5, .2, f"2026 Season   ·   {date_from} to {date_to}   ·   {len(outings)} outing(s)",
             ha="center", va="center", fontsize=11, color=MUTED_TEXT, family="monospace")
 
     ax_velo = fig.add_subplot(gs[2, 0]); ax_velo.set_facecolor(PANEL_COLOR)
@@ -1039,7 +1112,8 @@ def generate_season_summary(pitcher_name, outings, date_from, date_to):
     ax_usage.tick_params(labelsize=6, colors=MUTED_TEXT)
     for sp in ax_usage.spines.values(): sp.set_color(GRID_COLOR)
 
-    ax_t = fig.add_subplot(gs[3, :]); ax_t.set_facecolor(BG_COLOR); ax_t.axis("off")
+    ax_tree = fig.add_subplot(gs[3, :]); draw_count_tree(ax_tree, p, pts)
+    ax_t = fig.add_subplot(gs[4, :]); ax_t.set_facecolor(BG_COLOR); ax_t.axis("off")
     trows = []
     grade_cells = {}
     for ri, pt in enumerate(pts):
@@ -1095,22 +1169,22 @@ def generate_season_summary(pitcher_name, outings, date_from, date_to):
     tbl = ax_t.table(cellText=[r[1:] for r in trows], rowLabels=[r[0] for r in trows],
                      colLabels=cols, loc="center", cellLoc="center")
     tbl.auto_set_font_size(False)
-    tbl.set_fontsize(12)
-    tbl.scale(1, 2.8)
+    tbl.set_fontsize(15)
+    tbl.scale(1, 3.2)
 
     for (row, col), cell in tbl.get_celld().items():
         cell.set_edgecolor(GRID_COLOR); cell.set_linewidth(0.6)
         if row == 0:
             cell.set_facecolor("#1E1E2E")
-            cell.set_text_props(fontweight="bold", color="white", fontfamily="monospace", fontsize=12)
+            cell.set_text_props(fontweight="bold", color="white", fontfamily="monospace", fontsize=15)
         elif col == -1:
             pitch_name = cell.get_text().get_text()
             if pitch_name == "All":
                 cell.set_facecolor("#E8E8E8")
-                cell.set_text_props(fontweight="bold", color=TEXT_COLOR, fontfamily="monospace", fontsize=13)
+                cell.set_text_props(fontweight="bold", color=TEXT_COLOR, fontfamily="monospace", fontsize=16)
             else:
                 cell.set_facecolor(pc(pitch_name))
-                cell.set_text_props(fontweight="bold", color="white", fontfamily="monospace", fontsize=13)
+                cell.set_text_props(fontweight="bold", color="white", fontfamily="monospace", fontsize=16)
         else:
             graded = False
             if (row, col) in grade_cells and row <= len(pts):
@@ -1118,18 +1192,18 @@ def generate_season_summary(pitcher_name, outings, date_from, date_to):
                 gc = grade_color(pt_name, stat_name, raw_val, higher_better)
                 if gc is not None:
                     cell.set_facecolor(gc)
-                    cell.set_text_props(color=TEXT_COLOR, fontfamily="monospace", fontweight="bold")
+                    cell.set_text_props(color=TEXT_COLOR, fontfamily="monospace", fontweight="bold", fontsize=15)
                     graded = True
             if not graded:
                 if row == len(trows):
                     cell.set_facecolor("#F0F0F0")
-                    cell.set_text_props(color=TEXT_COLOR, fontweight="bold", fontfamily="monospace")
+                    cell.set_text_props(color=TEXT_COLOR, fontweight="bold", fontfamily="monospace", fontsize=15)
                 elif row % 2 == 0:
                     cell.set_facecolor("#F7F8FA")
-                    cell.set_text_props(color=TEXT_COLOR, fontfamily="monospace")
+                    cell.set_text_props(color=TEXT_COLOR, fontfamily="monospace", fontsize=15)
                 else:
                     cell.set_facecolor("#FFFFFF")
-                    cell.set_text_props(color=TEXT_COLOR, fontfamily="monospace")
+                    cell.set_text_props(color=TEXT_COLOR, fontfamily="monospace", fontsize=15)
 
     return fig
 
@@ -1339,10 +1413,8 @@ def spray_direction(angle):
 def get_team_batting(df, team_name, date_from, date_to):
     """Normalizes GameDate type to prevent datetime/date comparison errors."""
     df = df.copy()
-    df["GameDate"] = pd.to_datetime(df["GameDate"], errors="coerce")
-    date_from_ts = pd.Timestamp(date_from)
-    date_to_ts   = pd.Timestamp(date_to) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
-    date_mask = (df["GameDate"] >= date_from_ts) & (df["GameDate"] <= date_to_ts)
+    df["GameDate"] = pd.to_datetime(df["GameDate"], errors="coerce").dt.date
+    date_mask = (df["GameDate"] >= date_from) & (df["GameDate"] <= date_to)
     mask = date_mask & (
         ((df["HomeTeam"] == team_name) & (df["TopBottom"] == "Bottom")) |
         ((df["AwayTeam"] == team_name) & (df["TopBottom"] == "Top"))
