@@ -637,10 +637,8 @@ def get_teams(df):
 def get_team_pitches(df, team_name, date_from, date_to):
     """Normalizes GameDate type to prevent datetime/date comparison errors."""
     df = df.copy()
-    df["GameDate"] = pd.to_datetime(df["GameDate"], errors="coerce")
-    date_from_ts = pd.Timestamp(date_from)
-    date_to_ts   = pd.Timestamp(date_to) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
-    date_mask = (df["GameDate"] >= date_from_ts) & (df["GameDate"] <= date_to_ts)
+    df["GameDate"] = pd.to_datetime(df["GameDate"], errors="coerce").dt.date
+    date_mask = (df["GameDate"] >= date_from) & (df["GameDate"] <= date_to)
     mask = date_mask & (
         ((df["HomeTeam"] == team_name) & (df["TopBottom"] == "Top")) |
         ((df["AwayTeam"] == team_name) & (df["TopBottom"] == "Bottom"))
@@ -723,6 +721,75 @@ def identify_team_code(df, team_name, ht, at):
         if not bot_pitchers.empty: return bot_pitchers.index[0]
     return None
 
+
+def draw_count_tree(ax, p, pts):
+    """Pie-chart count tree showing pitch mix at each count."""
+    ax.set_facecolor(BG_COLOR)
+    ax.axis("off")
+    ax.set_xlim(0, 10); ax.set_ylim(0, 8)
+    ax.set_title("Pitch Usage by Count", fontsize=13, fontweight="bold", color=TEXT_COLOR, pad=6)
+
+    # Count positions in diamond layout: (balls, strikes) -> (x, y)
+    positions = {
+        (0,0): (5, 7),
+        (1,0): (6.5, 5.5), (0,1): (3.5, 5.5),
+        (2,0): (8, 4),     (1,1): (5, 4),     (0,2): (2, 4),
+        (3,0): (9, 2.5),   (2,1): (6.5, 2.5), (1,2): (3.5, 2.5),
+        (3,1): (7.5, 1),   (2,2): (5, 1),
+        (3,2): (5, -0.5),
+    }
+    # Draw connecting lines first
+    edges = [
+        ((0,0),(1,0)),((0,0),(0,1)),
+        ((1,0),(2,0)),((1,0),(1,1)),
+        ((0,1),(1,1)),((0,1),(0,2)),
+        ((2,0),(3,0)),((2,0),(2,1)),
+        ((1,1),(2,1)),((1,1),(1,2)),
+        ((0,2),(1,2)),
+        ((3,0),(3,1)),((2,1),(3,1)),
+        ((2,1),(2,2)),((1,2),(2,2)),
+        ((3,1),(3,2)),((2,2),(3,2)),
+    ]
+    for (b1,s1),(b2,s2) in edges:
+        x1,y1 = positions[(b1,s1)]; x2,y2 = positions[(b2,s2)]
+        ax.plot([x1,x2],[y1,y2], color=GRID_COLOR, lw=0.8, zorder=1)
+
+    r = 0.55  # pie radius in axes units
+    for (balls, strikes), (cx, cy) in positions.items():
+        sub = p[(p["Balls"] == balls) & (p["Strikes"] == strikes)]
+        n = len(sub)
+        if n == 0:
+            circ = plt.Circle((cx, cy), r, color="#E8E8E8", zorder=2)
+            ax.add_patch(circ)
+            ax.text(cx, cy+r+0.12, f"{balls}-{strikes}", ha="center", va="bottom",
+                    fontsize=7, color=MUTED_TEXT, fontweight="bold")
+            continue
+        counts = sub["PitchType"].value_counts()
+        sizes  = [counts.get(pt, 0) for pt in pts]
+        colors = [pc(pt) for pt in pts]
+        total  = sum(sizes)
+        if total == 0: continue
+        start = 90.0
+        for sz, col in zip(sizes, colors):
+            if sz == 0: continue
+            angle = sz / total * 360
+            wedge = plt.matplotlib.patches.Wedge(
+                (cx, cy), r, start - angle, start,
+                facecolor=col, edgecolor="white", linewidth=0.4, zorder=3)
+            ax.add_patch(wedge)
+            start -= angle
+        ax.text(cx, cy+r+0.12, f"{balls}-{strikes}", ha="center", va="bottom",
+                fontsize=7, color=TEXT_COLOR, fontweight="bold")
+        ax.text(cx, cy-r-0.12, f"n={n}", ha="center", va="top",
+                fontsize=6, color=MUTED_TEXT)
+
+    # Legend
+    for i, pt in enumerate(pts):
+        ax.scatter([], [], c=pc(pt), s=60, label=pt)
+    ax.legend(loc="lower left", fontsize=8, frameon=False,
+              labelcolor=TEXT_COLOR, ncol=min(len(pts), 6),
+              bbox_to_anchor=(0, -0.02))
+
 # ===========================================================================
 # GENERATE ONE PITCHER PAGE
 # ===========================================================================
@@ -752,11 +819,11 @@ def generate_pitcher_page(p, pname, gdate, opp):
 
     pts = p["PitchType"].value_counts().index.tolist()
 
-    fig = plt.figure(figsize=(26, 16), facecolor=BG_COLOR)
-    gs = GridSpec(4, 4, figure=fig,
-                  height_ratios=[.06, .02, .42, .50],
+    fig = plt.figure(figsize=(26, 22), facecolor=BG_COLOR)
+    gs = GridSpec(5, 4, figure=fig,
+                  height_ratios=[.045, .015, .28, .22, .435],
                   width_ratios=[1, 1, 1, 0.65],
-                  hspace=.18, wspace=.18,
+                  hspace=.22, wspace=.18,
                   top=0.96, bottom=0.02, left=0.03, right=0.97)
 
     ax = fig.add_subplot(gs[0, :]); ax.set_facecolor(BG_COLOR); ax.axis("off")
@@ -782,7 +849,8 @@ def generate_pitcher_page(p, pname, gdate, opp):
     ax_m = fig.add_subplot(gs[2, 2]); draw_mov(ax_m, p, pts)
     ax_rp = fig.add_subplot(gs[2, 3]); draw_release(ax_rp, p, pts)
 
-    ax_t = fig.add_subplot(gs[3, :]); ax_t.set_facecolor(BG_COLOR); ax_t.axis("off")
+    ax_tree = fig.add_subplot(gs[3, :]); draw_count_tree(ax_tree, p, pts)
+    ax_t = fig.add_subplot(gs[4, :]); ax_t.set_facecolor(BG_COLOR); ax_t.axis("off")
     trows = []
     grade_cells = {}
     for ri, pt in enumerate(pts):
@@ -840,22 +908,22 @@ def generate_pitcher_page(p, pname, gdate, opp):
     tbl = ax_t.table(cellText=[r[1:] for r in trows], rowLabels=[r[0] for r in trows],
                      colLabels=cols, loc="center", cellLoc="center")
     tbl.auto_set_font_size(False)
-    tbl.set_fontsize(12)
-    tbl.scale(1, 2.8)
+    tbl.set_fontsize(15)
+    tbl.scale(1, 3.2)
 
     for (row, col), cell in tbl.get_celld().items():
         cell.set_edgecolor(GRID_COLOR); cell.set_linewidth(0.6)
         if row == 0:
             cell.set_facecolor("#1E1E2E")
-            cell.set_text_props(fontweight="bold", color="white", fontfamily="monospace", fontsize=12)
+            cell.set_text_props(fontweight="bold", color="white", fontfamily="monospace", fontsize=15)
         elif col == -1:
             pitch_name = cell.get_text().get_text()
             if pitch_name == "All":
                 cell.set_facecolor("#E8E8E8")
-                cell.set_text_props(fontweight="bold", color=TEXT_COLOR, fontfamily="monospace", fontsize=13)
+                cell.set_text_props(fontweight="bold", color=TEXT_COLOR, fontfamily="monospace", fontsize=16)
             else:
                 cell.set_facecolor(pc(pitch_name))
-                cell.set_text_props(fontweight="bold", color="white", fontfamily="monospace", fontsize=13)
+                cell.set_text_props(fontweight="bold", color="white", fontfamily="monospace", fontsize=16)
         else:
             graded = False
             if (row, col) in grade_cells and row <= len(pts):
@@ -863,18 +931,18 @@ def generate_pitcher_page(p, pname, gdate, opp):
                 gc = grade_color(pt_name, stat_name, raw_val, higher_better)
                 if gc is not None:
                     cell.set_facecolor(gc)
-                    cell.set_text_props(color=TEXT_COLOR, fontfamily="monospace", fontweight="bold", fontsize=12)
+                    cell.set_text_props(color=TEXT_COLOR, fontfamily="monospace", fontweight="bold", fontsize=15)
                     graded = True
             if not graded:
                 if row == len(trows):
                     cell.set_facecolor("#E8E8E8")
-                    cell.set_text_props(color=TEXT_COLOR, fontweight="bold", fontfamily="monospace", fontsize=12)
+                    cell.set_text_props(color=TEXT_COLOR, fontweight="bold", fontfamily="monospace", fontsize=15)
                 elif row % 2 == 0:
                     cell.set_facecolor("#F4F6F9")
-                    cell.set_text_props(color=TEXT_COLOR, fontfamily="monospace", fontsize=12)
+                    cell.set_text_props(color=TEXT_COLOR, fontfamily="monospace", fontsize=15)
                 else:
                     cell.set_facecolor("#FFFFFF")
-                    cell.set_text_props(color=TEXT_COLOR, fontfamily="monospace", fontsize=12)
+                    cell.set_text_props(color=TEXT_COLOR, fontfamily="monospace", fontsize=15)
 
     return fig
 
@@ -955,7 +1023,7 @@ def generate_season_summary(pitcher_name, outings, date_from, date_to):
               f"PA {total_pa}   ·   P {N}   ·   H {total_hits + total_hr}   ·   HR {total_hr}   ·   "
               f"K {total_k}   ·   BB {total_bb}   ·   {len(outings)} outing(s)")
     ax.text(.5, .7, banner, ha="center", va="center", fontsize=14, color=TEXT_COLOR, family="monospace", fontweight="bold")
-    ax.text(.5, .2, f"{date_from} to {date_to}     |     " + "  /  ".join(outing_details),
+    ax.text(.5, .2, f"2026 Season   ·   {date_from} to {date_to}   ·   {len(outings)} outing(s)",
             ha="center", va="center", fontsize=11, color=MUTED_TEXT, family="monospace")
 
     ax_velo = fig.add_subplot(gs[2, 0]); ax_velo.set_facecolor(PANEL_COLOR)
@@ -1039,7 +1107,8 @@ def generate_season_summary(pitcher_name, outings, date_from, date_to):
     ax_usage.tick_params(labelsize=6, colors=MUTED_TEXT)
     for sp in ax_usage.spines.values(): sp.set_color(GRID_COLOR)
 
-    ax_t = fig.add_subplot(gs[3, :]); ax_t.set_facecolor(BG_COLOR); ax_t.axis("off")
+    ax_tree = fig.add_subplot(gs[3, :]); draw_count_tree(ax_tree, p, pts)
+    ax_t = fig.add_subplot(gs[4, :]); ax_t.set_facecolor(BG_COLOR); ax_t.axis("off")
     trows = []
     grade_cells = {}
     for ri, pt in enumerate(pts):
@@ -1339,10 +1408,8 @@ def spray_direction(angle):
 def get_team_batting(df, team_name, date_from, date_to):
     """Normalizes GameDate type to prevent datetime/date comparison errors."""
     df = df.copy()
-    df["GameDate"] = pd.to_datetime(df["GameDate"], errors="coerce")
-    date_from_ts = pd.Timestamp(date_from)
-    date_to_ts   = pd.Timestamp(date_to) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
-    date_mask = (df["GameDate"] >= date_from_ts) & (df["GameDate"] <= date_to_ts)
+    df["GameDate"] = pd.to_datetime(df["GameDate"], errors="coerce").dt.date
+    date_mask = (df["GameDate"] >= date_from) & (df["GameDate"] <= date_to)
     mask = date_mask & (
         ((df["HomeTeam"] == team_name) & (df["TopBottom"] == "Bottom")) |
         ((df["AwayTeam"] == team_name) & (df["TopBottom"] == "Top"))
