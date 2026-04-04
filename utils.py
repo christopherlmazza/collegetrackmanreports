@@ -726,19 +726,18 @@ def draw_count_tree(ax, p, pts):
     """Pie-chart count tree showing pitch mix at each count."""
     ax.set_facecolor(BG_COLOR)
     ax.axis("off")
-    ax.set_xlim(0, 10); ax.set_ylim(0, 8)
     ax.set_title("Pitch Usage by Count", fontsize=13, fontweight="bold", color=TEXT_COLOR, pad=6)
 
-    # Count positions in diamond layout: (balls, strikes) -> (x, y)
+    # Use inset axes for each count so pies are always circular
+    # Map (balls, strikes) to normalized figure position (x, y) as fractions of axes
     positions = {
-        (0,0): (5, 7),
-        (1,0): (6.5, 5.5), (0,1): (3.5, 5.5),
-        (2,0): (8, 4),     (1,1): (5, 4),     (0,2): (2, 4),
-        (3,0): (9, 2.5),   (2,1): (6.5, 2.5), (1,2): (3.5, 2.5),
-        (3,1): (7.5, 1),   (2,2): (5, 1),
-        (3,2): (5, -0.5),
+        (0,0): (0.50, 0.88),
+        (1,0): (0.65, 0.72), (0,1): (0.35, 0.72),
+        (2,0): (0.80, 0.56), (1,1): (0.50, 0.56), (0,2): (0.20, 0.56),
+        (3,0): (0.92, 0.40), (2,1): (0.65, 0.40), (1,2): (0.35, 0.40),
+        (3,1): (0.78, 0.22), (2,2): (0.50, 0.22),
+        (3,2): (0.50, 0.04),
     }
-    # Draw connecting lines first
     edges = [
         ((0,0),(1,0)),((0,0),(0,1)),
         ((1,0),(2,0)),((1,0),(1,1)),
@@ -750,45 +749,51 @@ def draw_count_tree(ax, p, pts):
         ((2,1),(2,2)),((1,2),(2,2)),
         ((3,1),(3,2)),((2,2),(3,2)),
     ]
+    # Draw connecting lines in axes coordinates
     for (b1,s1),(b2,s2) in edges:
         x1,y1 = positions[(b1,s1)]; x2,y2 = positions[(b2,s2)]
-        ax.plot([x1,x2],[y1,y2], color=GRID_COLOR, lw=0.8, zorder=1)
+        ax.plot([x1,x2],[y1,y2], color=GRID_COLOR, lw=0.8,
+                transform=ax.transAxes, zorder=1, clip_on=False)
 
-    r = 0.55  # pie radius in axes units
+    pie_size = 0.09  # fraction of axes width/height for each pie inset
+
     for (balls, strikes), (cx, cy) in positions.items():
         sub = p[(p["Balls"] == balls) & (p["Strikes"] == strikes)]
         n = len(sub)
+
+        # Create inset axes centered at (cx, cy) in axes fraction coords
+        ins = ax.inset_axes([cx - pie_size/2, cy - pie_size/2, pie_size, pie_size])
+        ins.set_aspect("equal")
+        ins.axis("off")
+
         if n == 0:
-            circ = plt.Circle((cx, cy), r, color="#E8E8E8", zorder=2)
-            ax.add_patch(circ)
-            ax.text(cx, cy+r+0.12, f"{balls}-{strikes}", ha="center", va="bottom",
-                    fontsize=7, color=MUTED_TEXT, fontweight="bold")
-            continue
-        counts = sub["PitchType"].value_counts()
-        sizes  = [counts.get(pt, 0) for pt in pts]
-        colors = [pc(pt) for pt in pts]
-        total  = sum(sizes)
-        if total == 0: continue
-        start = 90.0
-        for sz, col in zip(sizes, colors):
-            if sz == 0: continue
-            angle = sz / total * 360
-            wedge = plt.matplotlib.patches.Wedge(
-                (cx, cy), r, start - angle, start,
-                facecolor=col, edgecolor="white", linewidth=0.4, zorder=3)
-            ax.add_patch(wedge)
-            start -= angle
-        ax.text(cx, cy+r+0.12, f"{balls}-{strikes}", ha="center", va="bottom",
-                fontsize=7, color=TEXT_COLOR, fontweight="bold")
-        ax.text(cx, cy-r-0.12, f"n={n}", ha="center", va="top",
-                fontsize=6, color=MUTED_TEXT)
+            ins.pie([1], colors=["#E8E8E8"], startangle=90)
+        else:
+            counts = sub["PitchType"].value_counts()
+            sizes  = [counts.get(pt, 0) for pt in pts]
+            colors = [pc(pt) for pt in pts]
+            filtered = [(s, c) for s, c in zip(sizes, colors) if s > 0]
+            if filtered:
+                szf, clf = zip(*filtered)
+                ins.pie(szf, colors=clf, startangle=90,
+                        wedgeprops={"linewidth": 0.4, "edgecolor": "white"})
+
+        # Count label above
+        ax.text(cx, cy + pie_size/2 + 0.015, f"{balls}-{strikes}",
+                transform=ax.transAxes, ha="center", va="bottom",
+                fontsize=7.5, color=TEXT_COLOR, fontweight="bold")
+        # n label below
+        if n > 0:
+            ax.text(cx, cy - pie_size/2 - 0.015, f"n={n}",
+                    transform=ax.transAxes, ha="center", va="top",
+                    fontsize=6.5, color=MUTED_TEXT)
 
     # Legend
-    for i, pt in enumerate(pts):
+    for pt in pts:
         ax.scatter([], [], c=pc(pt), s=60, label=pt)
-    ax.legend(loc="lower left", fontsize=8, frameon=False,
+    ax.legend(loc="lower left", fontsize=9, frameon=False,
               labelcolor=TEXT_COLOR, ncol=min(len(pts), 6),
-              bbox_to_anchor=(0, -0.02))
+              bbox_to_anchor=(0.0, 0.0))
 
 # ===========================================================================
 # GENERATE ONE PITCHER PAGE
@@ -997,9 +1002,9 @@ def generate_season_summary(pitcher_name, outings, date_from, date_to):
     izwp = round(iz_wh_ct / iz_sw * 100, 1) if iz_sw else 0
     pts = p["PitchType"].value_counts().index.tolist()
 
-    fig = plt.figure(figsize=(26, 17), facecolor=BG_COLOR)
-    gs = GridSpec(4, 3, figure=fig,
-                  height_ratios=[.06, .04, .36, .54],
+    fig = plt.figure(figsize=(26, 24), facecolor=BG_COLOR)
+    gs = GridSpec(5, 3, figure=fig,
+                  height_ratios=[.045, .03, .24, .20, .485],
                   width_ratios=[1, 1.2, 1.2],
                   hspace=.22, wspace=.22,
                   top=0.96, bottom=0.02, left=0.04, right=0.97)
@@ -1164,22 +1169,22 @@ def generate_season_summary(pitcher_name, outings, date_from, date_to):
     tbl = ax_t.table(cellText=[r[1:] for r in trows], rowLabels=[r[0] for r in trows],
                      colLabels=cols, loc="center", cellLoc="center")
     tbl.auto_set_font_size(False)
-    tbl.set_fontsize(12)
-    tbl.scale(1, 2.8)
+    tbl.set_fontsize(15)
+    tbl.scale(1, 3.2)
 
     for (row, col), cell in tbl.get_celld().items():
         cell.set_edgecolor(GRID_COLOR); cell.set_linewidth(0.6)
         if row == 0:
             cell.set_facecolor("#1E1E2E")
-            cell.set_text_props(fontweight="bold", color="white", fontfamily="monospace", fontsize=12)
+            cell.set_text_props(fontweight="bold", color="white", fontfamily="monospace", fontsize=15)
         elif col == -1:
             pitch_name = cell.get_text().get_text()
             if pitch_name == "All":
                 cell.set_facecolor("#E8E8E8")
-                cell.set_text_props(fontweight="bold", color=TEXT_COLOR, fontfamily="monospace", fontsize=13)
+                cell.set_text_props(fontweight="bold", color=TEXT_COLOR, fontfamily="monospace", fontsize=16)
             else:
                 cell.set_facecolor(pc(pitch_name))
-                cell.set_text_props(fontweight="bold", color="white", fontfamily="monospace", fontsize=13)
+                cell.set_text_props(fontweight="bold", color="white", fontfamily="monospace", fontsize=16)
         else:
             graded = False
             if (row, col) in grade_cells and row <= len(pts):
@@ -1187,18 +1192,18 @@ def generate_season_summary(pitcher_name, outings, date_from, date_to):
                 gc = grade_color(pt_name, stat_name, raw_val, higher_better)
                 if gc is not None:
                     cell.set_facecolor(gc)
-                    cell.set_text_props(color=TEXT_COLOR, fontfamily="monospace", fontweight="bold")
+                    cell.set_text_props(color=TEXT_COLOR, fontfamily="monospace", fontweight="bold", fontsize=15)
                     graded = True
             if not graded:
                 if row == len(trows):
                     cell.set_facecolor("#F0F0F0")
-                    cell.set_text_props(color=TEXT_COLOR, fontweight="bold", fontfamily="monospace")
+                    cell.set_text_props(color=TEXT_COLOR, fontweight="bold", fontfamily="monospace", fontsize=15)
                 elif row % 2 == 0:
                     cell.set_facecolor("#F7F8FA")
-                    cell.set_text_props(color=TEXT_COLOR, fontfamily="monospace")
+                    cell.set_text_props(color=TEXT_COLOR, fontfamily="monospace", fontsize=15)
                 else:
                     cell.set_facecolor("#FFFFFF")
-                    cell.set_text_props(color=TEXT_COLOR, fontfamily="monospace")
+                    cell.set_text_props(color=TEXT_COLOR, fontfamily="monospace", fontsize=15)
 
     return fig
 
