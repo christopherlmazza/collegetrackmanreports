@@ -731,12 +731,12 @@ def draw_count_tree(ax, p, pts):
     # Use inset axes for each count so pies are always circular
     # Map (balls, strikes) to normalized figure position (x, y) as fractions of axes
     positions = {
-        (0,0): (0.50, 0.88),
-        (1,0): (0.65, 0.72), (0,1): (0.35, 0.72),
-        (2,0): (0.80, 0.56), (1,1): (0.50, 0.56), (0,2): (0.20, 0.56),
-        (3,0): (0.92, 0.40), (2,1): (0.65, 0.40), (1,2): (0.35, 0.40),
-        (3,1): (0.78, 0.22), (2,2): (0.50, 0.22),
-        (3,2): (0.50, 0.04),
+        (0,0): (0.50, 0.90),
+        (1,0): (0.64, 0.76), (0,1): (0.36, 0.76),
+        (2,0): (0.78, 0.62), (1,1): (0.50, 0.62), (0,2): (0.22, 0.62),
+        (3,0): (0.90, 0.48), (2,1): (0.64, 0.48), (1,2): (0.36, 0.48),
+        (3,1): (0.77, 0.32), (2,2): (0.50, 0.32),
+        (3,2): (0.50, 0.14),
     }
     edges = [
         ((0,0),(1,0)),((0,0),(0,1)),
@@ -755,7 +755,7 @@ def draw_count_tree(ax, p, pts):
         ax.plot([x1,x2],[y1,y2], color=GRID_COLOR, lw=0.8,
                 transform=ax.transAxes, zorder=1, clip_on=False)
 
-    pie_size = 0.09  # fraction of axes width/height for each pie inset
+    pie_size = 0.14  # fraction of axes width/height for each pie inset
 
     for (balls, strikes), (cx, cy) in positions.items():
         sub = p[(p["Balls"] == balls) & (p["Strikes"] == strikes)]
@@ -779,19 +779,19 @@ def draw_count_tree(ax, p, pts):
                         wedgeprops={"linewidth": 0.4, "edgecolor": "white"})
 
         # Count label above
-        ax.text(cx, cy + pie_size/2 + 0.015, f"{balls}-{strikes}",
+        ax.text(cx, cy + pie_size/2 + 0.012, f"{balls}-{strikes}",
                 transform=ax.transAxes, ha="center", va="bottom",
-                fontsize=7.5, color=TEXT_COLOR, fontweight="bold")
+                fontsize=10, color=TEXT_COLOR, fontweight="bold")
         # n label below
         if n > 0:
-            ax.text(cx, cy - pie_size/2 - 0.015, f"n={n}",
+            ax.text(cx, cy - pie_size/2 - 0.012, f"n={n}",
                     transform=ax.transAxes, ha="center", va="top",
-                    fontsize=6.5, color=MUTED_TEXT)
+                    fontsize=8.5, color=MUTED_TEXT)
 
     # Legend
     for pt in pts:
-        ax.scatter([], [], c=pc(pt), s=60, label=pt)
-    ax.legend(loc="lower left", fontsize=9, frameon=False,
+        ax.scatter([], [], c=pc(pt), s=80, label=pt)
+    ax.legend(loc="lower left", fontsize=11, frameon=False,
               labelcolor=TEXT_COLOR, ncol=min(len(pts), 6),
               bbox_to_anchor=(0.0, 0.0))
 
