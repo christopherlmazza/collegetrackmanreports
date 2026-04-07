@@ -213,6 +213,68 @@ def fmt(s, fn="mean", d=1):
     r = v.mean() if fn == "mean" else v.max()
     return f"{r:.{d}f}"
 
+
+# ===========================================================================
+# STUFF+ SCORING
+# ===========================================================================
+_STUFF_MODEL      = None
+_STUFF_MODEL_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)) if "__file__" in dir() else os.getcwd(),
+    "stuff_plus_model.pkl")
+STUFF_TARGET_MEAN = 0.0553
+STUFF_TARGET_STD  = 0.0234
+STUFF_FEATURES    = ["RelSpeed","SpinRate","Extension","InducedVertBreak",
+                     "ax_mirrored","x0_mirrored","RelHeight",
+                     "speed_diff","ivb_diff","hb_diff"]
+
+def _load_stuff_model():
+    global _STUFF_MODEL
+    if _STUFF_MODEL is not None:
+        return _STUFF_MODEL
+    if not os.path.exists(_STUFF_MODEL_PATH):
+        return None
+    try:
+        import joblib
+        _STUFF_MODEL = joblib.load(_STUFF_MODEL_PATH)
+        return _STUFF_MODEL
+    except Exception:
+        return None
+
+def compute_stuff_plus(pitcher_df):
+    """Compute Stuff+ for each pitch. Returns a Series of per-pitch scores."""
+    model = _load_stuff_model()
+    if model is None:
+        return pd.Series(np.nan, index=pitcher_df.index)
+    df = pitcher_df.copy()
+    med_side = df["RelSide"].median()
+    is_lhp   = med_side < 0
+    df["ax_mirrored"] = np.where(is_lhp, -df["HorzBreak"],  df["HorzBreak"])
+    df["x0_mirrored"] = np.where(is_lhp,  df["RelSide"],   -df["RelSide"])
+    fb_mask = df["PitchType"].isin(["Fastball", "Sinker", "Cutter"])
+    if fb_mask.sum() >= 3:
+        fb_speed = df.loc[fb_mask, "RelSpeed"].mean()
+        fb_ivb   = df.loc[fb_mask, "InducedVertBreak"].mean()
+        fb_hb    = df.loc[fb_mask, "ax_mirrored"].mean()
+    else:
+        fb_speed = df["RelSpeed"].mean()
+        fb_ivb   = df["InducedVertBreak"].mean()
+        fb_hb    = df["ax_mirrored"].mean()
+    df["speed_diff"] = df["RelSpeed"]         - fb_speed
+    df["ivb_diff"]   = df["InducedVertBreak"] - fb_ivb
+    df["hb_diff"]    = (df["ax_mirrored"]     - fb_hb).abs()
+    complete = df[STUFF_FEATURES].notna().all(axis=1)
+    result   = pd.Series(np.nan, index=df.index)
+    if complete.sum() == 0:
+        return result
+    try:
+        import warnings as _w; _w.filterwarnings("ignore")
+        raw = model.predict(df.loc[complete, STUFF_FEATURES])
+        sp  = 100 - ((raw - STUFF_TARGET_MEAN) / STUFF_TARGET_STD * 10)
+        result.loc[complete] = np.round(sp, 1)
+    except Exception:
+        pass
+    return result
+
 # ===========================================================================
 # UI / STYLING FUNCTIONS
 # ===========================================================================
@@ -856,6 +918,7 @@ def generate_pitcher_page(p, pname, gdate, opp):
 
     ax_tree = fig.add_subplot(gs[3, :]); draw_count_tree(ax_tree, p, pts)
     ax_t = fig.add_subplot(gs[4, :]); ax_t.set_facecolor(BG_COLOR); ax_t.axis("off")
+    sp_series = compute_stuff_plus(p)
     trows = []
     grade_cells = {}
     for ri, pt in enumerate(pts):
@@ -878,7 +941,13 @@ def generate_pitcher_page(p, pname, gdate, opp):
         avg_velo_val = avg_velo_raw.mean() if not avg_velo_raw.empty else None
         zone_val = s_iz.sum() / n * 100 if n else None
         zone_str = f"{zone_val:.1f}%" if zone_val is not None else "—"
-        trows.append([pt, n, f"{n / N * 100:.1f}%",
+        sp_val = sp_series[p["PitchType"] == pt].dropna().mean()
+        sp_str = f"{sp_val:.1f}" if not np.isnan(sp_val) else "—"
+
+        sp_val = sp_series[p["PitchType"] == pt].dropna().mean()
+        sp_str = f"{sp_val:.1f}" if not np.isnan(sp_val) else "—"
+
+        trows.append([pt, n, f"{n / N * 100:.1f}%", sp_str,
                       fmt(s["RelSpeed"]), fmt(s["RelSpeed"], "max"),
                       fmt(s["SpinRate"], d=0),
                       fmt(s["InducedVertBreak"]), fmt(s["HorzBreak"]),
@@ -888,25 +957,25 @@ def generate_pitcher_page(p, pname, gdate, opp):
 
         data_row = ri + 1
         if avg_velo_val is not None:
-            grade_cells[(data_row, 2)] = (pt, "velo", avg_velo_val, True)
+            grade_cells[(data_row, 3)] = (pt, "velo", avg_velo_val, True)
         if xwoba_val is not None:
-            grade_cells[(data_row, 11)] = (pt, "xwoba", xwoba_val, False)
+            grade_cells[(data_row, 12)] = (pt, "xwoba", xwoba_val, False)
         if zone_val is not None:
-            grade_cells[(data_row, 12)] = (pt, "zone_pct", zone_val, True)
+            grade_cells[(data_row, 13)] = (pt, "zone_pct", zone_val, True)
         if whiff_val is not None:
-            grade_cells[(data_row, 13)] = (pt, "whiff_pct", whiff_val, True)
+            grade_cells[(data_row, 14)] = (pt, "whiff_pct", whiff_val, True)
         if chase_val is not None:
-            grade_cells[(data_row, 14)] = (pt, "chase_pct", chase_val, True)
+            grade_cells[(data_row, 15)] = (pt, "chase_pct", chase_val, True)
 
     all_sw_ct = sw.sum()
     all_whiff = f"{wh.sum() / all_sw_ct * 100:.1f}%" if all_sw_ct else "0%"
     all_xw = p["xwOBA"].dropna()
     all_xwoba = f"{all_xw.mean():.3f}" if not all_xw.empty else "—"
-    trows.append(["All", N, "100%", "—", "—", "—", "—", "—",
+    trows.append(["All", N, "100%", "—", "—", "—", "—", "—", "—",
                   fmt(p["Extension"]), "—", "—", "—",
                   all_xwoba, f"{zpct}%", all_whiff, f"{cpct}%", f"{izwp}%"])
 
-    cols = ["Count", "Usage%", "Avg\nVelo", "Max\nVelo", "Avg\nSpin",
+    cols = ["Count", "Usage%", "Stuff+", "Avg\nVelo", "Max\nVelo", "Avg\nSpin",
             "IVB", "HB", "Ext", "RelH", "RelS", "VAA",
             "xwOBA", "Zone%", "Whiff%", "Chase%", "IZ\nWhiff%"]
 
@@ -1114,6 +1183,7 @@ def generate_season_summary(pitcher_name, outings, date_from, date_to):
 
     ax_tree = fig.add_subplot(gs[3, :]); draw_count_tree(ax_tree, p, pts)
     ax_t = fig.add_subplot(gs[4, :]); ax_t.set_facecolor(BG_COLOR); ax_t.axis("off")
+    sp_series = compute_stuff_plus(p)
     trows = []
     grade_cells = {}
     for ri, pt in enumerate(pts):
@@ -1135,7 +1205,13 @@ def generate_season_summary(pitcher_name, outings, date_from, date_to):
         avg_velo_val = avg_velo_raw.mean() if not avg_velo_raw.empty else None
         zone_val = s_iz.sum() / n * 100 if n else None
         zone_str = f"{zone_val:.1f}%" if zone_val is not None else "—"
-        trows.append([pt, n, f"{n / N * 100:.1f}%",
+        sp_val = sp_series[p["PitchType"] == pt].dropna().mean()
+        sp_str = f"{sp_val:.1f}" if not np.isnan(sp_val) else "—"
+
+        sp_val = sp_series[p["PitchType"] == pt].dropna().mean()
+        sp_str = f"{sp_val:.1f}" if not np.isnan(sp_val) else "—"
+
+        trows.append([pt, n, f"{n / N * 100:.1f}%", sp_str,
                       fmt(s["RelSpeed"]), fmt(s["RelSpeed"], "max"),
                       fmt(s["SpinRate"], d=0),
                       fmt(s["InducedVertBreak"]), fmt(s["HorzBreak"]),
@@ -1145,25 +1221,25 @@ def generate_season_summary(pitcher_name, outings, date_from, date_to):
 
         data_row = ri + 1
         if avg_velo_val is not None:
-            grade_cells[(data_row, 2)] = (pt, "velo", avg_velo_val, True)
+            grade_cells[(data_row, 3)] = (pt, "velo", avg_velo_val, True)
         if xwoba_val is not None:
-            grade_cells[(data_row, 11)] = (pt, "xwoba", xwoba_val, False)
+            grade_cells[(data_row, 12)] = (pt, "xwoba", xwoba_val, False)
         if zone_val is not None:
-            grade_cells[(data_row, 12)] = (pt, "zone_pct", zone_val, True)
+            grade_cells[(data_row, 13)] = (pt, "zone_pct", zone_val, True)
         if whiff_val is not None:
-            grade_cells[(data_row, 13)] = (pt, "whiff_pct", whiff_val, True)
+            grade_cells[(data_row, 14)] = (pt, "whiff_pct", whiff_val, True)
         if chase_val is not None:
-            grade_cells[(data_row, 14)] = (pt, "chase_pct", chase_val, True)
+            grade_cells[(data_row, 15)] = (pt, "chase_pct", chase_val, True)
 
     all_sw_ct = sw.sum()
     all_whiff = f"{wh.sum() / all_sw_ct * 100:.1f}%" if all_sw_ct else "0%"
     all_xw = p["xwOBA"].dropna()
     all_xwoba = f"{all_xw.mean():.3f}" if not all_xw.empty else "—"
-    trows.append(["All", N, "100%", "—", "—", "—", "—", "—",
+    trows.append(["All", N, "100%", "—", "—", "—", "—", "—", "—",
                   fmt(p["Extension"]), "—", "—", "—",
                   all_xwoba, f"{zpct}%", all_whiff, f"{cpct}%", f"{izwp}%"])
 
-    cols = ["Count", "Usage%", "Avg\nVelo", "Max\nVelo", "Avg\nSpin",
+    cols = ["Count", "Usage%", "Stuff+", "Avg\nVelo", "Max\nVelo", "Avg\nSpin",
             "IVB", "HB", "Ext", "RelH", "RelS", "VAA",
             "xwOBA", "Zone%", "Whiff%", "Chase%", "IZ\nWhiff%"]
     tbl = ax_t.table(cellText=[r[1:] for r in trows], rowLabels=[r[0] for r in trows],
