@@ -531,4 +531,8 @@ def _git_push():
 
 if __name__ == "__main__":
     main()
+<<<<<<< Updated upstream
     _git_push()
+=======
+    _git_push()
+>>>>>>> Stashed changes
