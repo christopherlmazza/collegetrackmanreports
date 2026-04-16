@@ -24,15 +24,11 @@ with st.sidebar:
     st.success(f"✅ Data loaded\n\n{n_games} games · Updated {last_updated or 'unknown'}")
 
     all_dates = idx_df["GameDate"].dropna()
-    from datetime import date as _date
-    min_date  = all_dates.min() if not all_dates.empty else _date(2026, 2, 1)
-    max_date  = all_dates.max() if not all_dates.empty else _date.today()
-    if hasattr(min_date, "date"): min_date = min_date.date()
-    if hasattr(max_date, "date"): max_date = max_date.date()
-    default_from = max(min_date, max_date - timedelta(days=7))
+    min_date  = all_dates.min()
+    max_date  = all_dates.max()
     col1, col2 = st.columns(2)
     with col1:
-        date_from = st.date_input("From", value=default_from,
+        date_from = st.date_input("From", value=max_date - timedelta(days=7),
                                    min_value=min_date, max_value=max_date)
     with col2:
         date_to = st.date_input("To", value=max_date,
@@ -74,20 +70,23 @@ if team_df is None or team_df.empty:
     st.warning(f"No pitches found for {team_name} between {date_from} and {date_to}")
     st.stop()
 
+# Filter to pitches thrown BY this team
 team_df = get_team_pitches(team_df, team_name, date_from, date_to)
 
 if team_df.empty:
     st.warning(f"No pitching data found for {team_name}")
     st.stop()
 
-df_all = team_df
+df_all = team_df  # alias for compatibility
 
+# Show games found
 games = (team_df.groupby(["GameDate", "HomeTeam", "AwayTeam"])
          .size().reset_index().sort_values("GameDate"))
 st.subheader(f"{team_name} — {len(games)} game(s)")
 for _, row in games.iterrows():
     st.text(f"  📅 {row['GameDate']} — {row['HomeTeam']} vs {row['AwayTeam']}")
 
+# Build pitcher list from parquet
 cache_key = f"{team_name}_{date_from}_{date_to}"
 if st.session_state.get("_team_key") != cache_key:
     pitcher_meta = {}
@@ -106,6 +105,7 @@ if st.session_state.get("_team_key") != cache_key:
     st.session_state.pop("pitcher_outings", None)
 
 def load_full_pitcher_data(pitcher_names_to_load):
+    """Build per-pitcher outing DataFrames from parquet — no API calls."""
     if "pitcher_outings" not in st.session_state:
         st.session_state["pitcher_outings"] = {}
     needed = [pn for pn in pitcher_names_to_load
@@ -191,17 +191,9 @@ if "pitcher_names" in st.session_state and st.session_state["pitcher_names"]:
                          use_container_width=True, key="btn_summary"):
                 figures = []
                 with st.spinner("Building season summaries from local data..."):
-                    # Normalize all dates to plain date objects before any comparison
-                    _all_dates = pd.to_datetime(idx_df["GameDate"].dropna(), errors="coerce").dropna()
-                    _season_min = _all_dates.min().date()
-                    _season_max = _all_dates.max().date()
-                    full_season_df = load_team_data(team_name, _season_min, _season_max)
-                    if full_season_df is None or full_season_df.empty:
-                        full_season_df = df_all
-                    _fs_dates = pd.to_datetime(full_season_df["GameDate"].dropna(), errors="coerce").dropna()
-                    _fs_min = _fs_dates.min().date()
-                    _fs_max = _fs_dates.max().date()
-                    season_df = get_team_pitches(full_season_df, team_name, _fs_min, _fs_max)
+                    season_df = get_team_pitches(
+                        df_all, team_name,
+                        team_df["GameDate"].min(), team_df["GameDate"].max())
                     for pname in selected_names:
                         p_season = season_df[season_df["Pitcher"] == pname].copy()
                         if p_season.empty:
@@ -220,10 +212,9 @@ if "pitcher_names" in st.session_state and st.session_state["pitcher_names"]:
                             opp = at if team_name.lower() in ht.lower() else ht
                             outings.append((g_df.reset_index(drop=True), gdate, opp))
                         outings = sorted(outings, key=lambda x: x[1])
-                        _s_dates = pd.to_datetime(season_df["GameDate"].dropna(), errors="coerce").dropna()
                         fig = generate_season_summary(
                             pname, outings,
-                            _s_dates.min().date(), _s_dates.max().date())
+                            team_df["GameDate"].min(), team_df["GameDate"].max())
                         if fig:
                             figures.append((pname, fig))
                 if figures:

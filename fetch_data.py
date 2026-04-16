@@ -339,8 +339,20 @@ def save_index(sessions):
             "HomeTeam":  s.get("homeTeam",{}).get("name",""),
             "AwayTeam":  s.get("awayTeam",{}).get("name",""),
         })
-    df = pd.DataFrame(rows).drop_duplicates("SessionID")
-    df["GameDate"] = pd.to_datetime(df["GameDate"], errors="coerce").dt.date
+    new_df = pd.DataFrame(rows).drop_duplicates("SessionID")
+    new_df["GameDate"] = pd.to_datetime(new_df["GameDate"], errors="coerce").dt.date
+
+    # Merge with existing index so we never lose historical sessions
+    if os.path.exists(INDEX_PATH) and os.path.getsize(INDEX_PATH) > 0:
+        try:
+            existing = pd.read_parquet(INDEX_PATH)
+            existing["GameDate"] = pd.to_datetime(existing["GameDate"], errors="coerce").dt.date
+            df = pd.concat([existing, new_df], ignore_index=True).drop_duplicates("SessionID")
+        except Exception:
+            df = new_df
+    else:
+        df = new_df
+
     df.to_parquet(INDEX_PATH, index=False)
     print(f"  Index saved: {len(df)} games")
     return df
@@ -531,8 +543,4 @@ def _git_push():
 
 if __name__ == "__main__":
     main()
-<<<<<<< Updated upstream
     _git_push()
-=======
-    _git_push()
->>>>>>> Stashed changes
