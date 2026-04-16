@@ -27,8 +27,10 @@ with st.sidebar:
     from datetime import date as _date
     min_date  = all_dates.min() if not all_dates.empty else _date(2026, 2, 1)
     max_date  = all_dates.max() if not all_dates.empty else _date.today()
+    # Ensure they are proper date objects not NaT
     if hasattr(min_date, "date"): min_date = min_date.date()
     if hasattr(max_date, "date"): max_date = max_date.date()
+    # Clamp default value so it never goes below min_date
     default_from = max(min_date, max_date - timedelta(days=7))
     col1, col2 = st.columns(2)
     with col1:
@@ -74,20 +76,23 @@ if team_df is None or team_df.empty:
     st.warning(f"No pitches found for {team_name} between {date_from} and {date_to}")
     st.stop()
 
+# Filter to pitches thrown BY this team
 team_df = get_team_pitches(team_df, team_name, date_from, date_to)
 
 if team_df.empty:
     st.warning(f"No pitching data found for {team_name}")
     st.stop()
 
-df_all = team_df
+df_all = team_df  # alias for compatibility
 
+# Show games found
 games = (team_df.groupby(["GameDate", "HomeTeam", "AwayTeam"])
          .size().reset_index().sort_values("GameDate"))
 st.subheader(f"{team_name} — {len(games)} game(s)")
 for _, row in games.iterrows():
     st.text(f"  📅 {row['GameDate']} — {row['HomeTeam']} vs {row['AwayTeam']}")
 
+# Build pitcher list from parquet
 cache_key = f"{team_name}_{date_from}_{date_to}"
 if st.session_state.get("_team_key") != cache_key:
     pitcher_meta = {}
@@ -106,6 +111,7 @@ if st.session_state.get("_team_key") != cache_key:
     st.session_state.pop("pitcher_outings", None)
 
 def load_full_pitcher_data(pitcher_names_to_load):
+    """Build per-pitcher outing DataFrames from parquet — no API calls."""
     if "pitcher_outings" not in st.session_state:
         st.session_state["pitcher_outings"] = {}
     needed = [pn for pn in pitcher_names_to_load
@@ -148,8 +154,8 @@ if "pitcher_names" in st.session_state and st.session_state["pitcher_names"]:
     selected_names = [label_to_name[lbl] for lbl in selected_labels]
 
     if selected_names:
-        tab_reports, tab_summary, tab_heatmaps, tab_debug = st.tabs(
-            ["📄 Game Reports", "📊 Season Summary", "🔥 Heatmaps", "🔧 Debug"])
+        tab_reports, tab_summary, tab_heatmaps, tab_pairing, tab_debug = st.tabs(
+            ["📄 Game Reports", "📊 Season Summary", "🔥 Heatmaps", "🎯 Pitch Pairing", "🔧 Debug"])
 
         # ========== TAB 1: GAME REPORTS ==========
         with tab_reports:
@@ -191,17 +197,14 @@ if "pitcher_names" in st.session_state and st.session_state["pitcher_names"]:
                          use_container_width=True, key="btn_summary"):
                 figures = []
                 with st.spinner("Building season summaries from local data..."):
-                    # Normalize all dates to plain date objects before any comparison
-                    _all_dates = pd.to_datetime(idx_df["GameDate"].dropna(), errors="coerce").dropna()
-                    _season_min = _all_dates.min().date()
-                    _season_max = _all_dates.max().date()
-                    full_season_df = load_team_data(team_name, _season_min, _season_max)
+                    # Always load full season regardless of date filter
+                    _all_dates = idx_df["GameDate"].dropna()
+                    full_season_df = load_team_data(team_name, _all_dates.min(), _all_dates.max())
                     if full_season_df is None or full_season_df.empty:
                         full_season_df = df_all
-                    _fs_dates = pd.to_datetime(full_season_df["GameDate"].dropna(), errors="coerce").dropna()
-                    _fs_min = _fs_dates.min().date()
-                    _fs_max = _fs_dates.max().date()
-                    season_df = get_team_pitches(full_season_df, team_name, _fs_min, _fs_max)
+                    season_df = get_team_pitches(
+                        full_season_df, team_name,
+                        full_season_df["GameDate"].min(), full_season_df["GameDate"].max())
                     for pname in selected_names:
                         p_season = season_df[season_df["Pitcher"] == pname].copy()
                         if p_season.empty:
@@ -220,10 +223,9 @@ if "pitcher_names" in st.session_state and st.session_state["pitcher_names"]:
                             opp = at if team_name.lower() in ht.lower() else ht
                             outings.append((g_df.reset_index(drop=True), gdate, opp))
                         outings = sorted(outings, key=lambda x: x[1])
-                        _s_dates = pd.to_datetime(season_df["GameDate"].dropna(), errors="coerce").dropna()
                         fig = generate_season_summary(
                             pname, outings,
-                            _s_dates.min().date(), _s_dates.max().date())
+                            season_df["GameDate"].min(), season_df["GameDate"].max())
                         if fig:
                             figures.append((pname, fig))
                 if figures:
@@ -303,7 +305,391 @@ if "pitcher_names" in st.session_state and st.session_state["pitcher_names"]:
                   st.session_state.get("_hm_loaded") != hm_pitcher):
                 st.info("Click **Load Pitch Data** to load data for this pitcher")
 
-        # ========== TAB 4: DEBUG ==========
+        # ========== TAB 4: PITCH PAIRING ==========
+        with tab_pairing:
+            st.caption("Interactive pitch pairing tool — drag the anchor pitch to see how all pitches diverge from a common trajectory.")
+
+            pp_pitcher = (selected_names[0] if len(selected_names) == 1
+                          else st.selectbox("Select pitcher", selected_names, key="pp_pitcher"))
+
+            if st.button("🎯 Load Pitch Pairing", type="primary",
+                         use_container_width=True, key="btn_pairing"):
+                with st.spinner(f"Loading {pp_pitcher} season data..."):
+                    _all_dates = idx_df["GameDate"].dropna()
+                    pp_full_df = load_team_data(team_name, _all_dates.min(), _all_dates.max())
+                    if pp_full_df is not None and not pp_full_df.empty:
+                        pp_df = get_team_pitches(pp_full_df, team_name,
+                                                  pp_full_df["GameDate"].min(),
+                                                  pp_full_df["GameDate"].max())
+                        pp_df = pp_df[pp_df["Pitcher"] == pp_pitcher].copy()
+                        pp_df["PitchType"] = pp_df.apply(resolve_pt, axis=1)
+                        pp_df, _ = auto_correct_pitch_types(pp_df)
+
+                        # Build pitch profile per type
+                        NEEDED = ["PitchType","HorzBreak","InducedVertBreak",
+                                  "RelSpeed","PlateLocSide","PlateLocHeight","RelHeight","RelSide"]
+                        pp_clean = pp_df[NEEDED].dropna(subset=["HorzBreak","InducedVertBreak","RelSpeed"])
+                        profiles = {}
+                        for pt, grp in pp_clean.groupby("PitchType"):
+                            if len(grp) < 5:
+                                continue
+                            profiles[pt] = {
+                                "count":    int(len(grp)),
+                                "hb":       float(grp["HorzBreak"].mean()),
+                                "ivb":      float(grp["InducedVertBreak"].mean()),
+                                "velo":     float(grp["RelSpeed"].mean()),
+                                "hb_std":   float(grp["HorzBreak"].std()),
+                                "ivb_std":  float(grp["InducedVertBreak"].std()),
+                                "loc_x":    float(grp["PlateLocSide"].mean()) if grp["PlateLocSide"].notna().any() else 0.0,
+                                "loc_y":    float(grp["PlateLocHeight"].mean()) if grp["PlateLocHeight"].notna().any() else 2.5,
+                            }
+
+                        if profiles:
+                            st.session_state["pp_profiles"] = profiles
+                            st.session_state["pp_pitcher_name"] = pp_pitcher
+                            st.success(f"Loaded {pp_pitcher} — {len(profiles)} pitch types")
+                        else:
+                            st.warning("Not enough pitch data.")
+
+            if st.session_state.get("pp_profiles") and st.session_state.get("pp_pitcher_name") == pp_pitcher:
+                profiles = st.session_state["pp_profiles"]
+                import json
+
+                PITCH_COLORS_JS = {
+                    "Fastball": "#D32F2F", "Sinker": "#E65100", "Cutter": "#B8A000",
+                    "Slider": "#00897B", "Curveball": "#1565C0", "ChangeUp": "#F9A825",
+                    "Splitter": "#00796B", "Sweeper": "#7B1FA2", "Other": "#888888",
+                }
+                colors = {pt: PITCH_COLORS_JS.get(pt, "#888888") for pt in profiles}
+
+                profiles_json = json.dumps(profiles)
+                colors_json   = json.dumps(colors)
+                pitcher_name  = pp_pitcher
+
+                html = f"""
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body {{ margin:0; background:#0d1117; color:#e6edf3; font-family:'Segoe UI',sans-serif; }}
+  #container {{ display:flex; flex-direction:column; align-items:center; padding:16px; }}
+  h2 {{ margin:0 0 4px; font-size:18px; color:#e6edf3; }}
+  p.sub {{ margin:0 0 12px; font-size:12px; color:#8b949e; }}
+  #controls {{ display:flex; gap:12px; align-items:center; margin-bottom:12px; flex-wrap:wrap; justify-content:center; }}
+  label {{ font-size:12px; color:#8b949e; }}
+  select, input {{ background:#161b22; color:#e6edf3; border:1px solid #30363d; border-radius:6px; padding:4px 8px; font-size:13px; }}
+  #canvas-wrap {{ position:relative; }}
+  canvas {{ border:1px solid #30363d; border-radius:8px; background:#161b22; cursor:grab; }}
+  canvas:active {{ cursor:grabbing; }}
+  #legend {{ display:flex; gap:12px; flex-wrap:wrap; justify-content:center; margin-top:10px; }}
+  .legend-item {{ display:flex; align-items:center; gap:5px; font-size:12px; }}
+  .legend-dot {{ width:12px; height:12px; border-radius:50%; }}
+  #tooltip {{ position:fixed; background:#1c2128; border:1px solid #30363d; border-radius:6px;
+               padding:8px 10px; font-size:12px; pointer-events:none; display:none; z-index:100; line-height:1.6; }}
+</style>
+</head>
+<body>
+<div id="container">
+  <h2>🎯 Pitch Pairing — {pitcher_name}</h2>
+  <p class="sub">Drag the anchor pitch (★) to reposition. All others move relative to it based on movement differences.</p>
+  <div id="controls">
+    <div><label>Anchor pitch: </label>
+    <select id="anchorSel"></select></div>
+    <div><label>Show lines: </label>
+    <input type="checkbox" id="showLines" checked></div>
+    <div><label>Bubble size: </label>
+    <select id="bubbleMode"><option value="movement">By movement variance</option><option value="fixed">Fixed</option></select></div>
+  </div>
+  <div id="canvas-wrap">
+    <canvas id="c" width="520" height="560"></canvas>
+  </div>
+  <div id="legend"></div>
+</div>
+<div id="tooltip"></div>
+
+<script>
+const PROFILES = {profiles_json};
+const COLORS   = {colors_json};
+
+// Zone constants (in feet, catcher POV — mirror x)
+const ZONE_X1 = -0.83, ZONE_X2 = 0.83;
+const ZONE_Y1 = 1.5,   ZONE_Y2 = 3.5;
+const VIEW_X1 = -2.0,  VIEW_X2 = 2.0;
+const VIEW_Y1 = 0.2,   VIEW_Y2 = 4.8;
+
+const W = 520, H = 560;
+const PAD = 40;
+
+function toCanvas(fx, fy) {{
+  const cx = PAD + ((-fx - VIEW_X1) / (VIEW_X2 - VIEW_X1)) * (W - 2*PAD);
+  const cy = H - PAD - ((fy - VIEW_Y1) / (VIEW_Y2 - VIEW_Y1)) * (H - 2*PAD);
+  return [cx, cy];
+}}
+
+function fromCanvas(cx, cy) {{
+  const fx = -((cx - PAD) / (W - 2*PAD) * (VIEW_X2 - VIEW_X1) + VIEW_X1);
+  const fy = (H - PAD - cy) / (H - 2*PAD) * (VIEW_Y2 - VIEW_Y1) + VIEW_Y1;
+  return [fx, fy];
+}}
+
+const pitchTypes = Object.keys(PROFILES);
+let anchorType = pitchTypes[0];
+let anchorPos  = null;  // will be set from anchor pitch avg location
+
+// Initialize anchor position from avg location
+function initAnchor() {{
+  const p = PROFILES[anchorType];
+  // Mirror x for catcher POV
+  anchorPos = {{ x: -(p.loc_x), y: p.loc_y }};
+}}
+
+// Populate anchor select
+const anchorSel = document.getElementById('anchorSel');
+pitchTypes.forEach(pt => {{
+  const opt = document.createElement('option');
+  opt.value = pt; opt.text = pt;
+  anchorSel.appendChild(opt);
+}});
+anchorSel.addEventListener('change', () => {{
+  anchorType = anchorSel.value;
+  initAnchor();
+  draw();
+}});
+
+// Legend
+const legend = document.getElementById('legend');
+pitchTypes.forEach(pt => {{
+  const d = document.createElement('div');
+  d.className = 'legend-item';
+  d.innerHTML = `<div class="legend-dot" style="background:${{COLORS[pt]}}"></div><span>${{pt}} (${{PROFILES[pt].count}})</span>`;
+  legend.appendChild(d);
+}});
+
+initAnchor();
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+// Drag state
+let dragging = false;
+let dragStart = null;
+
+function getPitchPos(pt) {{
+  const anchor = PROFILES[anchorType];
+  const p      = PROFILES[pt];
+  if (pt === anchorType) return anchorPos;
+  // Movement difference in inches → feet
+  const dx = (p.hb  - anchor.hb)  / 12;
+  const dy = (p.ivb - anchor.ivb) / 12;
+  // Mirror x for catcher POV
+  return {{ x: anchorPos.x - dx, y: anchorPos.y + dy }};
+}}
+
+function draw() {{
+  ctx.clearRect(0, 0, W, H);
+
+  // Background
+  ctx.fillStyle = '#161b22';
+  ctx.fillRect(0, 0, W, H);
+
+  // Grid lines
+  ctx.strokeStyle = '#21262d';
+  ctx.lineWidth = 1;
+  for (let x = -2; x <= 2; x += 0.5) {{
+    const [cx] = toCanvas(x, 0);
+    ctx.beginPath(); ctx.moveTo(cx, PAD); ctx.lineTo(cx, H-PAD); ctx.stroke();
+  }}
+  for (let y = 0.5; y <= 4.5; y += 0.5) {{
+    const [,cy] = toCanvas(0, y);
+    ctx.beginPath(); ctx.moveTo(PAD, cy); ctx.lineTo(W-PAD, cy); ctx.stroke();
+  }}
+
+  // Strike zone
+  const [zx1, zy1] = toCanvas(ZONE_X1, ZONE_Y2);
+  const [zx2, zy2] = toCanvas(ZONE_X2, ZONE_Y1);
+  ctx.strokeStyle = '#e6edf3';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(zx1, zy1, zx2-zx1, zy2-zy1);
+
+  // Zone thirds
+  ctx.strokeStyle = '#8b949e';
+  ctx.lineWidth = 0.7;
+  ctx.setLineDash([4,4]);
+  [2.167, 2.833].forEach(y => {{
+    const [,cy] = toCanvas(0, y);
+    const [cx1] = toCanvas(ZONE_X1, y);
+    const [cx2] = toCanvas(ZONE_X2, y);
+    ctx.beginPath(); ctx.moveTo(cx1, cy); ctx.lineTo(cx2, cy); ctx.stroke();
+  }});
+  ctx.setLineDash([]);
+
+  // Home plate
+  const platePts = [[-0.708,0.4],[0.708,0.4],[0.708,0.25],[0,0.1],[-0.708,0.25]];
+  ctx.fillStyle = '#c9d1d9';
+  ctx.strokeStyle = '#8b949e';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  platePts.forEach(([fx,fy],i) => {{
+    const [cx,cy] = toCanvas(fx, fy);
+    i===0 ? ctx.moveTo(cx,cy) : ctx.lineTo(cx,cy);
+  }});
+  ctx.closePath(); ctx.fill(); ctx.stroke();
+
+  // Axis labels
+  ctx.fillStyle = '#8b949e';
+  ctx.font = '11px Segoe UI';
+  ctx.textAlign = 'center';
+  ctx.fillText('← Inside RHB  |  Outside RHB →', W/2, H-8);
+  ctx.save(); ctx.translate(12, H/2); ctx.rotate(-Math.PI/2);
+  ctx.fillText('Height (ft)', 0, 0); ctx.restore();
+
+  const showLines = document.getElementById('showLines').checked;
+  const bubbleMode = document.getElementById('bubbleMode').value;
+
+  // Draw lines from anchor to each pitch
+  if (showLines) {{
+    const aPos = getPitchPos(anchorType);
+    const [ax, ay] = toCanvas(aPos.x, aPos.y);
+    pitchTypes.forEach(pt => {{
+      if (pt === anchorType) return;
+      const pos = getPitchPos(pt);
+      const [px, py] = toCanvas(pos.x, pos.y);
+      ctx.strokeStyle = COLORS[pt] + '66';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(px, py); ctx.stroke();
+      ctx.setLineDash([]);
+    }});
+  }}
+
+  // Draw pitch bubbles
+  pitchTypes.forEach(pt => {{
+    const p   = PROFILES[pt];
+    const pos = getPitchPos(pt);
+    const [cx, cy] = toCanvas(pos.x, pos.y);
+    const isAnchor = pt === anchorType;
+
+    let r;
+    if (bubbleMode === 'movement') {{
+      const variance = Math.sqrt(p.hb_std**2 + p.ivb_std**2);
+      r = Math.max(14, Math.min(30, variance * 2.5));
+    }} else {{
+      r = 20;
+    }}
+
+    // Shadow
+    ctx.shadowColor = COLORS[pt] + '88';
+    ctx.shadowBlur  = isAnchor ? 15 : 8;
+
+    // Fill
+    ctx.fillStyle = COLORS[pt];
+    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI*2); ctx.fill();
+    ctx.shadowBlur = 0;
+
+    // Border
+    ctx.strokeStyle = isAnchor ? '#ffffff' : COLORS[pt]+'cc';
+    ctx.lineWidth   = isAnchor ? 3 : 1.5;
+    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI*2); ctx.stroke();
+
+    // Anchor star
+    if (isAnchor) {{
+      ctx.fillStyle = '#ffffff';
+      ctx.font = `bold ${{Math.round(r*0.9)}}px Segoe UI`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('★', cx, cy);
+    }} else {{
+      ctx.fillStyle = '#ffffff';
+      ctx.font = `bold ${{Math.round(r*0.55)}}px Segoe UI`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      // Abbreviate pitch name
+      const abbr = pt.replace('FourSeam','4S').replace('TwoSeam','2S')
+                     .replace('Fastball','FB').replace('Sinker','SI')
+                     .replace('Cutter','CT').replace('Slider','SL')
+                     .replace('Curveball','CB').replace('ChangeUp','CH')
+                     .replace('Sweeper','SW').replace('Splitter','SP');
+      ctx.fillText(abbr, cx, cy);
+    }}
+    ctx.textBaseline = 'alphabetic';
+
+    // Velo label
+    ctx.fillStyle = '#e6edf3';
+    ctx.font = '10px Segoe UI';
+    ctx.textAlign = 'center';
+    ctx.fillText(p.velo.toFixed(1), cx, cy + r + 12);
+  }});
+}}
+
+// Tooltip
+const tooltip = document.getElementById('tooltip');
+canvas.addEventListener('mousemove', e => {{
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+
+  if (dragging) {{
+    const [fx, fy] = fromCanvas(mx, my);
+    anchorPos = {{ x: fx, y: fy }};
+    draw();
+    return;
+  }}
+
+  // Hover detection
+  let found = null;
+  pitchTypes.forEach(pt => {{
+    const pos = getPitchPos(pt);
+    const [cx, cy] = toCanvas(pos.x, pos.y);
+    const dist = Math.sqrt((mx-cx)**2 + (my-cy)**2);
+    if (dist < 28) found = pt;
+  }});
+
+  if (found) {{
+    const p = PROFILES[found];
+    const pos = getPitchPos(found);
+    tooltip.style.display = 'block';
+    tooltip.style.left = (e.clientX + 12) + 'px';
+    tooltip.style.top  = (e.clientY - 10) + 'px';
+    tooltip.innerHTML = `<b style="color:${{COLORS[found]}}">${{found}}</b><br>
+      Velo: ${{p.velo.toFixed(1)}} mph<br>
+      HB: ${{p.hb.toFixed(1)}}" &nbsp; IVB: ${{p.ivb.toFixed(1)}}"<br>
+      Location: (${{pos.x.toFixed(2)}}, ${{pos.y.toFixed(2)}})<br>
+      Count: ${{p.count}} pitches`;
+    canvas.style.cursor = found === anchorType ? 'grab' : 'default';
+  }} else {{
+    tooltip.style.display = 'none';
+    canvas.style.cursor = 'default';
+  }}
+}});
+
+canvas.addEventListener('mousedown', e => {{
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+  const aPos = getPitchPos(anchorType);
+  const [ax, ay] = toCanvas(aPos.x, aPos.y);
+  const dist = Math.sqrt((mx-ax)**2 + (my-ay)**2);
+  if (dist < 30) {{
+    dragging = true;
+    canvas.style.cursor = 'grabbing';
+  }}
+}});
+
+canvas.addEventListener('mouseup', () => {{ dragging = false; canvas.style.cursor = 'default'; }});
+canvas.addEventListener('mouseleave', () => {{ dragging = false; tooltip.style.display = 'none'; }});
+
+document.getElementById('showLines').addEventListener('change', draw);
+document.getElementById('bubbleMode').addEventListener('change', draw);
+
+draw();
+</script>
+</body>
+</html>
+"""
+                st.components.v1.html(html, height=680, scrolling=False)
+
+        # ========== TAB 5: DEBUG ==========
         with tab_debug:
             st.caption("Raw PA-level data for verifying IP/ER calculations.")
             if st.button("🔧 Load & Show Debug Data", type="primary",
