@@ -352,15 +352,13 @@ def load_team_data(team_name, date_from, date_to):
         return None
 
     # Find dates this team played in range
-    # Normalize date types
-    idx_gd = pd.to_datetime(idx["GameDate"], errors="coerce").dt.date
-    try: date_from = pd.Timestamp(date_from).date()
-    except: pass
-    try: date_to = pd.Timestamp(date_to).date()
-    except: pass
+    # Normalize to pd.Timestamp for safe comparison
+    idx_gd = pd.to_datetime(idx["GameDate"], errors="coerce")
+    df_from = pd.Timestamp(date_from)
+    df_to   = pd.Timestamp(date_to)
     team_mask = (
         (idx["HomeTeam"] == team_name) | (idx["AwayTeam"] == team_name)
-    ) & (idx_gd >= date_from) & (idx_gd <= date_to)
+    ) & (idx_gd >= df_from) & (idx_gd <= df_to)
     team_dates = sorted(idx[team_mask]["GameDate"].dropna().unique())
 
     if not team_dates:
@@ -440,13 +438,11 @@ def get_teams(df):
 
 def get_team_pitches(df, team_name, date_from, date_to):
     """Filter to pitches thrown by pitchers on the selected team in the date range."""
-    # Normalize date types — both sides must be date objects
-    gd = pd.to_datetime(df["GameDate"], errors="coerce").dt.date
-    try: date_from = pd.Timestamp(date_from).date()
-    except: pass
-    try: date_to = pd.Timestamp(date_to).date()
-    except: pass
-    date_mask = (gd >= date_from) & (gd <= date_to)
+    # Normalize ALL sides to pd.Timestamp (datetime64) for safe comparison
+    gd = pd.to_datetime(df["GameDate"], errors="coerce")
+    df_from = pd.Timestamp(date_from)
+    df_to   = pd.Timestamp(date_to)
+    date_mask = (gd >= df_from) & (gd <= df_to)
     mask = date_mask & (
         ((df["HomeTeam"] == team_name) & (df["TopBottom"] == "Top")) |
         ((df["AwayTeam"] == team_name) & (df["TopBottom"] == "Bottom"))
@@ -1160,13 +1156,11 @@ def spray_direction(angle):
 # ── Get team batting data ─────────────────────────────────────────────────────
 def get_team_batting(df, team_name, date_from, date_to):
     """Filter to at-bats where the selected team was BATTING."""
-    # Normalize date types
-    gd = pd.to_datetime(df["GameDate"], errors="coerce").dt.date
-    try: date_from = pd.Timestamp(date_from).date()
-    except: pass
-    try: date_to = pd.Timestamp(date_to).date()
-    except: pass
-    date_mask = (gd >= date_from) & (gd <= date_to)
+    # Normalize to pd.Timestamp for safe comparison
+    gd = pd.to_datetime(df["GameDate"], errors="coerce")
+    df_from = pd.Timestamp(date_from)
+    df_to   = pd.Timestamp(date_to)
+    date_mask = (gd >= df_from) & (gd <= df_to)
     mask = date_mask & (
         ((df["HomeTeam"] == team_name) & (df["TopBottom"] == "Bottom")) |
         ((df["AwayTeam"] == team_name) & (df["TopBottom"] == "Top"))
