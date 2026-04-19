@@ -191,10 +191,17 @@ if "pitcher_names" in st.session_state and st.session_state["pitcher_names"]:
             if st.button("📊 Generate Season Summaries", type="primary",
                          use_container_width=True, key="btn_summary"):
                 figures = []
-                with st.spinner("Building season summaries from local data..."):
+                with st.spinner("Building season summaries from local data (full 2026 season)..."):
+                    # Season summaries ALWAYS cover the full 2026 season, ignoring sidebar dates
+                    season_from = date(2026, 1, 1)
+                    season_to   = date(2026, 12, 31)
+                    # Load full-season data fresh (team_df was filtered to sidebar dates)
+                    full_season_df = load_team_data(team_name, season_from, season_to)
+                    if full_season_df.empty:
+                        st.warning(f"No 2026 season data found for {team_name}")
+                        st.stop()
                     season_df = get_team_pitches(
-                        df_all, team_name,
-                        team_df["GameDate"].min(), team_df["GameDate"].max())
+                        full_season_df, team_name, season_from, season_to)
                     for pname in selected_names:
                         p_season = season_df[season_df["Pitcher"] == pname].copy()
                         if p_season.empty:
@@ -213,9 +220,12 @@ if "pitcher_names" in st.session_state and st.session_state["pitcher_names"]:
                             opp = at if team_name.lower() in ht.lower() else ht
                             outings.append((g_df.reset_index(drop=True), gdate, opp))
                         outings = sorted(outings, key=lambda x: x[1])
+                        # Use actual first/last outing dates in the title (cleaner than Jan 1 - Dec 31)
+                        actual_from = outings[0][1]
+                        actual_to   = outings[-1][1]
                         fig = generate_season_summary(
                             pname, outings,
-                            team_df["GameDate"].min(), team_df["GameDate"].max())
+                            actual_from, actual_to)
                         if fig:
                             figures.append((pname, fig))
                 if figures:
