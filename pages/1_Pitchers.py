@@ -22,6 +22,7 @@ with st.sidebar:
     last_updated = get_last_updated()
     n_games = len(idx_df.drop_duplicates(subset=["GameDate","HomeTeam","AwayTeam"]))
     st.success(f"✅ Data loaded\n\n{n_games} games · Updated {last_updated or 'unknown'}")
+    st.caption(f"DEBUG: Index path={parquet_path}, Max date in idx={idx_df['GameDate'].max()}, Total rows={len(idx_df)}")
 
     all_dates = idx_df["GameDate"].dropna()
     min_date  = all_dates.min()
