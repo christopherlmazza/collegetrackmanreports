@@ -352,13 +352,13 @@ def load_team_data(team_name, date_from, date_to):
         return None
 
     # Find dates this team played in range
-    # Normalize to pd.Timestamp for safe comparison
-    idx_gd = pd.to_datetime(idx["GameDate"], errors="coerce")
-    df_from = pd.Timestamp(date_from)
-    df_to   = pd.Timestamp(date_to)
+    idx = idx.copy()
+    idx["GameDate"] = pd.to_datetime(idx["GameDate"], errors="coerce").dt.date
+    if hasattr(date_from, "date"): date_from = date_from.date()
+    if hasattr(date_to, "date"): date_to = date_to.date()
     team_mask = (
         (idx["HomeTeam"] == team_name) | (idx["AwayTeam"] == team_name)
-    ) & (idx_gd >= df_from) & (idx_gd <= df_to)
+    ) & (idx["GameDate"] >= date_from) & (idx["GameDate"] <= date_to)
     team_dates = sorted(idx[team_mask]["GameDate"].dropna().unique())
 
     if not team_dates:
@@ -437,12 +437,12 @@ def get_teams(df):
     return sorted(t for t in teams if t)
 
 def get_team_pitches(df, team_name, date_from, date_to):
-    """Filter to pitches thrown by pitchers on the selected team in the date range."""
-    # Normalize ALL sides to pd.Timestamp (datetime64) for safe comparison
-    gd = pd.to_datetime(df["GameDate"], errors="coerce")
-    df_from = pd.Timestamp(date_from)
-    df_to   = pd.Timestamp(date_to)
-    date_mask = (gd >= df_from) & (gd <= df_to)
+    """Filter to pitches thrown by pitchers on the selected team. Normalizes date types."""
+    df = df.copy()
+    df["GameDate"] = pd.to_datetime(df["GameDate"], errors="coerce").dt.date
+    if hasattr(date_from, "date"): date_from = date_from.date()
+    if hasattr(date_to, "date"): date_to = date_to.date()
+    date_mask = (df["GameDate"] >= date_from) & (df["GameDate"] <= date_to)
     mask = date_mask & (
         ((df["HomeTeam"] == team_name) & (df["TopBottom"] == "Top")) |
         ((df["AwayTeam"] == team_name) & (df["TopBottom"] == "Bottom"))
@@ -1156,11 +1156,11 @@ def spray_direction(angle):
 # ── Get team batting data ─────────────────────────────────────────────────────
 def get_team_batting(df, team_name, date_from, date_to):
     """Filter to at-bats where the selected team was BATTING."""
-    # Normalize to pd.Timestamp for safe comparison
-    gd = pd.to_datetime(df["GameDate"], errors="coerce")
-    df_from = pd.Timestamp(date_from)
-    df_to   = pd.Timestamp(date_to)
-    date_mask = (gd >= df_from) & (gd <= df_to)
+    df = df.copy()
+    df["GameDate"] = pd.to_datetime(df["GameDate"], errors="coerce").dt.date
+    if hasattr(date_from, "date"): date_from = date_from.date()
+    if hasattr(date_to, "date"): date_to = date_to.date()
+    date_mask = (df["GameDate"] >= date_from) & (df["GameDate"] <= date_to)
     mask = date_mask & (
         ((df["HomeTeam"] == team_name) & (df["TopBottom"] == "Bottom")) |
         ((df["AwayTeam"] == team_name) & (df["TopBottom"] == "Top"))
