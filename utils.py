@@ -16,6 +16,66 @@ from matplotlib.gridspec import GridSpec, GridSpecFromSubplotSpec
 from matplotlib.colors import LinearSegmentedColormap
 from scipy.stats import gaussian_kde
 from datetime import date, timedelta, datetime
+
+# ───────── STUFF+ MODEL (optional) ──────────
+_stuff_models = {}
+_stuff_scales = {}
+_stuff_status = ""
+STUFF_FEATURES = ["RelSpeed", "SpinRate", "InducedVertBreak", "HorzBreak",
+                  "Extension", "RelHeight", "RelSide", "VertApprAngle"]
+
+try:
+    import xgboost as xgb
+    _script_dir = os.path.dirname(os.path.abspath(__file__))
+    _model_dirs = [
+        os.path.join(_script_dir, "stuff_plus_models"),
+        os.path.join(os.getcwd(), "stuff_plus_models"),
+        "stuff_plus_models",
+    ]
+    _scales_path = None
+    _model_dir = None
+    for _md in _model_dirs:
+        _sp = os.path.join(_md, "scales.json")
+        if os.path.exists(_sp):
+            _scales_path = _sp
+            _model_dir = _md
+            break
+    if _scales_path:
+        with open(_scales_path) as f:
+            _stuff_scales = json.load(f)
+        for pt_name in _stuff_scales:
+            model_path = os.path.join(_model_dir, f"{pt_name}.json")
+            if os.path.exists(model_path):
+                m = xgb.Booster()
+                m.load_model(model_path)
+                _stuff_models[pt_name] = m
+        _stuff_status = f"Stuff+ loaded: {list(_stuff_models.keys())}"
+    else:
+        _stuff_status = "Stuff+ scales.json not found"
+except ImportError:
+    _stuff_status = "xgboost not installed"
+except Exception as e:
+    _stuff_status = f"Stuff+ error: {e}"
+
+def score_stuff_plus(pitch_df, pitch_type):
+    """Score pitches and return average Stuff+ for the pitch type. None if unavailable."""
+    if pitch_type not in _stuff_models or pitch_type not in _stuff_scales:
+        return None
+    sub = pitch_df.dropna(subset=STUFF_FEATURES)
+    if len(sub) < 1:
+        return None
+    try:
+        import xgboost as xgb
+        X = sub[STUFF_FEATURES].values
+        dmat = xgb.DMatrix(X, feature_names=STUFF_FEATURES)
+        preds = _stuff_models[pitch_type].predict(dmat)
+        raw_mean = float(np.mean(preds))
+        scales = _stuff_scales[pitch_type]
+        stuff_plus = 100 - ((raw_mean - scales["mean"]) / scales["std"]) * 10
+        return round(stuff_plus, 1)
+    except Exception:
+        return None
+
 warnings.filterwarnings("ignore")
 
 # ===========================================================================
@@ -608,7 +668,9 @@ def generate_pitcher_page(p, pname, gdate, opp):
         avg_velo_val = avg_velo_raw.mean() if not avg_velo_raw.empty else None
         zone_val = s_iz.sum() / n * 100 if n else None
         zone_str = f"{zone_val:.1f}%" if zone_val is not None else "—"
-        trows.append([pt, n, f"{n / N * 100:.1f}%",
+        stuff_val = score_stuff_plus(s, pt)
+        stuff_str = f"{stuff_val:.0f}" if stuff_val is not None else "—"
+        trows.append([pt, n, f"{n / N * 100:.1f}%", stuff_str,
                       fmt(s["RelSpeed"]), fmt(s["RelSpeed"], "max"),
                       fmt(s["SpinRate"], d=0),
                       fmt(s["InducedVertBreak"]), fmt(s["HorzBreak"]),
@@ -618,25 +680,25 @@ def generate_pitcher_page(p, pname, gdate, opp):
 
         data_row = ri + 1
         if avg_velo_val is not None:
-            grade_cells[(data_row, 2)] = (pt, "velo", avg_velo_val, True)
+            grade_cells[(data_row, 3)] = (pt, "velo", avg_velo_val, True)
         if xwoba_val is not None:
-            grade_cells[(data_row, 11)] = (pt, "xwoba", xwoba_val, False)
+            grade_cells[(data_row, 12)] = (pt, "xwoba", xwoba_val, False)
         if zone_val is not None:
-            grade_cells[(data_row, 12)] = (pt, "zone_pct", zone_val, True)
+            grade_cells[(data_row, 13)] = (pt, "zone_pct", zone_val, True)
         if whiff_val is not None:
-            grade_cells[(data_row, 13)] = (pt, "whiff_pct", whiff_val, True)
+            grade_cells[(data_row, 14)] = (pt, "whiff_pct", whiff_val, True)
         if chase_val is not None:
-            grade_cells[(data_row, 14)] = (pt, "chase_pct", chase_val, True)
+            grade_cells[(data_row, 15)] = (pt, "chase_pct", chase_val, True)
 
     all_sw_ct = sw.sum()
     all_whiff = f"{wh.sum() / all_sw_ct * 100:.1f}%" if all_sw_ct else "0%"
     all_xw = p["xwOBA"].dropna()
     all_xwoba = f"{all_xw.mean():.3f}" if not all_xw.empty else "—"
-    trows.append(["All", N, "100%", "—", "—", "—", "—", "—",
+    trows.append(["All", N, "100%", "—", "—", "—", "—", "—", "—",
                   fmt(p["Extension"]), "—", "—", "—",
                   all_xwoba, f"{zpct}%", all_whiff, f"{cpct}%", f"{izwp}%"])
 
-    cols = ["Count", "Usage%", "Avg\nVelo", "Max\nVelo", "Avg\nSpin",
+    cols = ["Count", "Usage%", "Stuff+", "Avg\nVelo", "Max\nVelo", "Avg\nSpin",
             "IVB", "HB", "Ext", "RelH", "RelS", "VAA",
             "xwOBA", "Zone%", "Whiff%", "Chase%", "IZ\nWhiff%"]
 
@@ -864,7 +926,9 @@ def generate_season_summary(pitcher_name, outings, date_from, date_to):
         avg_velo_val = avg_velo_raw.mean() if not avg_velo_raw.empty else None
         zone_val = s_iz.sum() / n * 100 if n else None
         zone_str = f"{zone_val:.1f}%" if zone_val is not None else "—"
-        trows.append([pt, n, f"{n / N * 100:.1f}%",
+        stuff_val = score_stuff_plus(s, pt)
+        stuff_str = f"{stuff_val:.0f}" if stuff_val is not None else "—"
+        trows.append([pt, n, f"{n / N * 100:.1f}%", stuff_str,
                       fmt(s["RelSpeed"]), fmt(s["RelSpeed"], "max"),
                       fmt(s["SpinRate"], d=0),
                       fmt(s["InducedVertBreak"]), fmt(s["HorzBreak"]),
@@ -874,25 +938,25 @@ def generate_season_summary(pitcher_name, outings, date_from, date_to):
 
         data_row = ri + 1
         if avg_velo_val is not None:
-            grade_cells[(data_row, 2)] = (pt, "velo", avg_velo_val, True)
+            grade_cells[(data_row, 3)] = (pt, "velo", avg_velo_val, True)
         if xwoba_val is not None:
-            grade_cells[(data_row, 11)] = (pt, "xwoba", xwoba_val, False)
+            grade_cells[(data_row, 12)] = (pt, "xwoba", xwoba_val, False)
         if zone_val is not None:
-            grade_cells[(data_row, 12)] = (pt, "zone_pct", zone_val, True)
+            grade_cells[(data_row, 13)] = (pt, "zone_pct", zone_val, True)
         if whiff_val is not None:
-            grade_cells[(data_row, 13)] = (pt, "whiff_pct", whiff_val, True)
+            grade_cells[(data_row, 14)] = (pt, "whiff_pct", whiff_val, True)
         if chase_val is not None:
-            grade_cells[(data_row, 14)] = (pt, "chase_pct", chase_val, True)
+            grade_cells[(data_row, 15)] = (pt, "chase_pct", chase_val, True)
 
     all_sw_ct = sw.sum()
     all_whiff = f"{wh.sum() / all_sw_ct * 100:.1f}%" if all_sw_ct else "0%"
     all_xw = p["xwOBA"].dropna()
     all_xwoba = f"{all_xw.mean():.3f}" if not all_xw.empty else "—"
-    trows.append(["All", N, "100%", "—", "—", "—", "—", "—",
+    trows.append(["All", N, "100%", "—", "—", "—", "—", "—", "—",
                   fmt(p["Extension"]), "—", "—", "—",
                   all_xwoba, f"{zpct}%", all_whiff, f"{cpct}%", f"{izwp}%"])
 
-    cols = ["Count", "Usage%", "Avg\nVelo", "Max\nVelo", "Avg\nSpin",
+    cols = ["Count", "Usage%", "Stuff+", "Avg\nVelo", "Max\nVelo", "Avg\nSpin",
             "IVB", "HB", "Ext", "RelH", "RelS", "VAA",
             "xwOBA", "Zone%", "Whiff%", "Chase%", "IZ\nWhiff%"]
     tbl = ax_t.table(cellText=[r[1:] for r in trows], rowLabels=[r[0] for r in trows],
