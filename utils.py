@@ -17,63 +17,206 @@ from matplotlib.colors import LinearSegmentedColormap
 from scipy.stats import gaussian_kde
 from datetime import date, timedelta, datetime
 
-# ───────── STUFF+ MODEL (optional) ──────────
-_stuff_models = {}
+# ───────── STUFF+ MODEL (LightGBM tjStuff+ — matches collegestuff01.py) ──────────
+# Model file: stuff_plus_models/stuff_plus_model.pkl  (sklearn Pipeline w/ RobustScaler + LGBMRegressor)
+# Scales:     stuff_plus_models/scales.json           ({"mean": float, "std": float, "features": [...]})
+# Feature set expected by the trained model:
+#   RelSpeed, SpinRate, Extension, InducedVertBreak,
+#   ax_mirrored, x0_mirrored, RelHeight,
+#   speed_diff, ivb_diff, hb_diff
+# Mirroring: LHP → negate HorzBreak (ax), keep RelSide (x0); RHP → keep HorzBreak, negate RelSide.
+# Diffs: relative to the pitcher's primary fastball (FF/SI/FC by usage; fallback = fastest pitch).
+# Scoring formula:  stuff_plus = 100 - ((pred - mean) / std) * 10
+_stuff_model  = None
 _stuff_scales = {}
 _stuff_status = ""
-STUFF_FEATURES = ["RelSpeed", "SpinRate", "InducedVertBreak", "HorzBreak",
-                  "Extension", "RelHeight", "RelSide", "VertApprAngle"]
+_stuff_debug  = []
+
+# Display-label → Statcast-code (matches label_map in collegestuff01.py, reversed)
+_PT_LABEL_TO_CODE = {
+    "Four-Seam": "FF", "Fastball": "FF",
+    "Sinker": "SI", "Two-Seam": "SI",
+    "Cutter": "FC",
+    "Slider": "SL",
+    "Curveball": "CU",
+    "Changeup": "CH",
+    "Splitter": "FS",
+}
+_FASTBALL_LABELS = {"Four-Seam", "Fastball", "Sinker", "Two-Seam", "Cutter"}
+
+STUFF_FEATURES = [
+    "RelSpeed", "SpinRate", "Extension", "InducedVertBreak",
+    "ax_mirrored", "x0_mirrored", "RelHeight",
+    "speed_diff", "ivb_diff", "hb_diff",
+]
+# Raw columns that must be present (non-null) to compute Stuff+
+_STUFF_RAW_COLS = ["RelSpeed", "SpinRate", "Extension", "InducedVertBreak",
+                   "HorzBreak", "RelSide", "RelHeight", "PitchType"]
 
 try:
-    import xgboost as xgb
     _script_dir = os.path.dirname(os.path.abspath(__file__))
     _model_dirs = [
         os.path.join(_script_dir, "stuff_plus_models"),
         os.path.join(os.getcwd(), "stuff_plus_models"),
         "stuff_plus_models",
     ]
-    _scales_path = None
+    _stuff_debug.append(f"script_dir = {_script_dir}")
+    _stuff_debug.append(f"cwd = {os.getcwd()}")
+    for _md in _model_dirs:
+        _stuff_debug.append(f"checking dir: {_md} -> exists={os.path.isdir(_md)}")
+        if os.path.isdir(_md):
+            try:
+                _stuff_debug.append(f"  contents: {os.listdir(_md)}")
+            except Exception as _e:
+                _stuff_debug.append(f"  listdir failed: {_e}")
+
+    import joblib
+    _stuff_debug.append("joblib imported OK")
+
     _model_dir = None
     for _md in _model_dirs:
-        _sp = os.path.join(_md, "scales.json")
-        if os.path.exists(_sp):
-            _scales_path = _sp
+        if os.path.exists(os.path.join(_md, "stuff_plus_model.pkl")) and \
+           os.path.exists(os.path.join(_md, "scales.json")):
             _model_dir = _md
             break
-    if _scales_path:
+
+    if _model_dir is None:
+        _stuff_status = "Stuff+ files not found (need stuff_plus_model.pkl + scales.json)"
+        _stuff_debug.append(_stuff_status)
+    else:
+        _model_path  = os.path.join(_model_dir, "stuff_plus_model.pkl")
+        _scales_path = os.path.join(_model_dir, "scales.json")
+        _stuff_debug.append(f"loading model from {_model_path}")
+        _stuff_debug.append(f"loading scales from {_scales_path}")
+
+        _stuff_model = joblib.load(_model_path)
         with open(_scales_path) as f:
             _stuff_scales = json.load(f)
-        for pt_name in _stuff_scales:
-            model_path = os.path.join(_model_dir, f"{pt_name}.json")
-            if os.path.exists(model_path):
-                m = xgb.Booster()
-                m.load_model(model_path)
-                _stuff_models[pt_name] = m
-        _stuff_status = f"Stuff+ loaded: {list(_stuff_models.keys())}"
-    else:
-        _stuff_status = "Stuff+ scales.json not found"
-except ImportError:
-    _stuff_status = "xgboost not installed"
+
+        # Sanity check the features list matches
+        _expected = _stuff_scales.get("features", STUFF_FEATURES)
+        if _expected != STUFF_FEATURES:
+            _stuff_debug.append(f"WARNING: scales.json features {_expected} differ from code features {STUFF_FEATURES}")
+
+        _stuff_status = (
+            f"Stuff+ ready (mean={_stuff_scales['mean']:.4f}, "
+            f"std={_stuff_scales['std']:.4f}, "
+            f"n={_stuff_scales.get('n_train_pitches','?')})"
+        )
+        _stuff_debug.append(_stuff_status)
+except ImportError as e:
+    _stuff_status = f"import error (need joblib + lightgbm + scikit-learn): {e}"
+    _stuff_debug.append(_stuff_status)
 except Exception as e:
     _stuff_status = f"Stuff+ error: {e}"
+    _stuff_debug.append(_stuff_status)
 
-def score_stuff_plus(pitch_df, pitch_type):
-    """Score pitches and return average Stuff+ for the pitch type. None if unavailable."""
-    if pitch_type not in _stuff_models or pitch_type not in _stuff_scales:
+def get_stuff_status():
+    """Return a multi-line diagnostic string about Stuff+ model loading."""
+    return _stuff_status + "\n\n" + "\n".join(_stuff_debug)
+
+def _infer_hand_from_relside(full_df):
+    """Infer pitcher handedness the same way collegestuff01.py does:
+    median RelSide < 0 → LHP. Returns 'L' or 'R'."""
+    rs = full_df["RelSide"].dropna()
+    if len(rs) == 0:
+        return "R"
+    return "L" if rs.median() < 0 else "R"
+
+def _compute_primary_fastball(full_df, hand):
+    """Find the pitcher's primary fastball from their full outing.
+    Matches collegestuff01.py logic: highest-usage FF/SI/FC, fallback = fastest pitch.
+    Returns (fb_speed, fb_ivb, fb_hb_mirrored) — floats or None if no data at all.
+    Works on DISPLAY labels (PitchType column), not Statcast codes."""
+    is_lhp = (hand == "L")
+
+    fb_rows = full_df[full_df["PitchType"].isin(_FASTBALL_LABELS)].copy()
+    # Apply the same mirror: LHP negate HorzBreak
+    if not fb_rows.empty:
+        fb_rows = fb_rows.dropna(subset=["RelSpeed", "InducedVertBreak", "HorzBreak"])
+
+    if not fb_rows.empty:
+        fb_rows["ax_mirrored"] = np.where(is_lhp, -fb_rows["HorzBreak"], fb_rows["HorzBreak"])
+        # Pick the fastball type with the most pitches
+        top_pt = fb_rows["PitchType"].value_counts().idxmax()
+        grp = fb_rows[fb_rows["PitchType"] == top_pt]
+        return (
+            float(grp["RelSpeed"].mean()),
+            float(grp["InducedVertBreak"].mean()),
+            float(grp["ax_mirrored"].mean()),
+        )
+
+    # Fallback: no fastball thrown — use all pitches, speed=max, ivb=mean, hb=mean (mirrored)
+    fallback = full_df.dropna(subset=["RelSpeed", "InducedVertBreak", "HorzBreak"])
+    if fallback.empty:
+        return (None, None, None)
+    hb_mirrored = (-fallback["HorzBreak"]) if is_lhp else fallback["HorzBreak"]
+    return (
+        float(fallback["RelSpeed"].max()),
+        float(fallback["InducedVertBreak"].mean()),
+        float(hb_mirrored.mean()),
+    )
+
+def _build_stuff_features(sub, hand, fb_speed, fb_ivb, fb_hb):
+    """Engineer the 10 model features exactly like collegestuff01.py."""
+    is_lhp = (hand == "L")
+    out = pd.DataFrame(index=sub.index)
+    out["RelSpeed"]         = sub["RelSpeed"].astype(float)
+    out["SpinRate"]         = sub["SpinRate"].astype(float)
+    out["Extension"]        = sub["Extension"].astype(float)
+    out["InducedVertBreak"] = sub["InducedVertBreak"].astype(float)
+    out["ax_mirrored"]      = np.where(is_lhp, -sub["HorzBreak"].astype(float),  sub["HorzBreak"].astype(float))
+    out["x0_mirrored"]      = np.where(is_lhp,  sub["RelSide"].astype(float),   -sub["RelSide"].astype(float))
+    out["RelHeight"]        = sub["RelHeight"].astype(float)
+    out["speed_diff"]       = out["RelSpeed"]         - fb_speed
+    out["ivb_diff"]         = out["InducedVertBreak"] - fb_ivb
+    out["hb_diff"]          = (out["ax_mirrored"]     - fb_hb).abs()   # TJ uses abs() on ax_diff
+    return out[STUFF_FEATURES]
+
+def score_stuff_plus(pitch_df, pitch_type, full_df=None):
+    """Return mean Stuff+ for ONE pitch type in a pitcher's outing.
+
+    Parameters
+    ----------
+    pitch_df : DataFrame filtered to ONE pitch type (e.g. all sliders in the outing)
+    pitch_type : display label, e.g. "Four-Seam", "Slider" (not used for scoring — kept for API compat)
+    full_df : the full outing DataFrame, needed for primary-fastball computation.
+              If None, falls back to pitch_df (less accurate for non-fastballs).
+
+    Returns float Stuff+ (clamped 40-160), or None if unavailable.
+    """
+    if _stuff_model is None or not _stuff_scales:
         return None
-    sub = pitch_df.dropna(subset=STUFF_FEATURES)
-    if len(sub) < 1:
+    if pitch_df is None or len(pitch_df) == 0:
         return None
+
     try:
-        import xgboost as xgb
-        X = sub[STUFF_FEATURES].values
-        dmat = xgb.DMatrix(X, feature_names=STUFF_FEATURES)
-        preds = _stuff_models[pitch_type].predict(dmat)
-        raw_mean = float(np.mean(preds))
-        scales = _stuff_scales[pitch_type]
-        stuff_plus = 100 - ((raw_mean - scales["mean"]) / scales["std"]) * 10
-        return round(stuff_plus, 1)
-    except Exception:
+        sub = pitch_df.dropna(subset=["RelSpeed", "SpinRate", "Extension",
+                                      "InducedVertBreak", "HorzBreak",
+                                      "RelSide", "RelHeight"])
+        if len(sub) == 0:
+            return None
+
+        context = full_df if full_df is not None else pitch_df
+        hand = _infer_hand_from_relside(context)
+        fb_speed, fb_ivb, fb_hb = _compute_primary_fastball(context, hand)
+        if fb_speed is None:
+            return None
+
+        X = _build_stuff_features(sub, hand, fb_speed, fb_ivb, fb_hb)
+        # Drop any rows with NaN in engineered features (shouldn't happen after dropna above,
+        # but diffs could be NaN if fb_* is NaN — guarded above)
+        X = X.dropna()
+        if len(X) == 0:
+            return None
+
+        preds = _stuff_model.predict(X)
+        z = (preds - _stuff_scales["mean"]) / _stuff_scales["std"]
+        sp = 100 - (z * 10)
+        sp = np.clip(sp, 40, 160)
+        return round(float(np.mean(sp)), 1)
+    except Exception as e:
+        _stuff_debug.append(f"score error for {pitch_type}: {e}")
         return None
 
 warnings.filterwarnings("ignore")
@@ -668,7 +811,7 @@ def generate_pitcher_page(p, pname, gdate, opp):
         avg_velo_val = avg_velo_raw.mean() if not avg_velo_raw.empty else None
         zone_val = s_iz.sum() / n * 100 if n else None
         zone_str = f"{zone_val:.1f}%" if zone_val is not None else "—"
-        stuff_val = score_stuff_plus(s, pt)
+        stuff_val = score_stuff_plus(s, pt, p)
         stuff_str = f"{stuff_val:.0f}" if stuff_val is not None else "—"
         trows.append([pt, n, f"{n / N * 100:.1f}%", stuff_str,
                       fmt(s["RelSpeed"]), fmt(s["RelSpeed"], "max"),
@@ -926,7 +1069,7 @@ def generate_season_summary(pitcher_name, outings, date_from, date_to):
         avg_velo_val = avg_velo_raw.mean() if not avg_velo_raw.empty else None
         zone_val = s_iz.sum() / n * 100 if n else None
         zone_str = f"{zone_val:.1f}%" if zone_val is not None else "—"
-        stuff_val = score_stuff_plus(s, pt)
+        stuff_val = score_stuff_plus(s, pt, p)
         stuff_str = f"{stuff_val:.0f}" if stuff_val is not None else "—"
         trows.append([pt, n, f"{n / N * 100:.1f}%", stuff_str,
                       fmt(s["RelSpeed"]), fmt(s["RelSpeed"], "max"),
