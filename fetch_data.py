@@ -354,15 +354,29 @@ def save_index(sessions):
         api_df["GameDate"] = pd.to_datetime(api_df["GameDate"], errors="coerce").dt.date
 
     # ── Source 2: scan by_date/ directly and extract from each parquet ──
+    # Important: the parquet filename (e.g. "2026-04-19.parquet") is the
+    # ground truth for the game date. The GameDate column INSIDE the parquet
+    # is unreliable — late-night games or UTC conversions can leave rows
+    # with a neighboring day's date even though they belong to this file.
+    import re
     disk_rows = []
     if os.path.isdir(BY_DATE_DIR):
         for fname in os.listdir(BY_DATE_DIR):
             if not fname.endswith(".parquet"):
                 continue
+            # Parse date from filename
+            m = re.match(r"(\d{4}-\d{2}-\d{2})\.parquet$", fname)
+            if not m:
+                continue
+            file_date_str = m.group(1)
+            try:
+                file_date = pd.to_datetime(file_date_str).date()
+            except Exception:
+                continue
             fpath = os.path.join(BY_DATE_DIR, fname)
             try:
                 # Only read the columns we need for the index — tiny + fast
-                pdf = pd.read_parquet(fpath, columns=["GameDate","HomeTeam","AwayTeam","SessionID"])
+                pdf = pd.read_parquet(fpath, columns=["HomeTeam","AwayTeam","SessionID"])
                 if pdf.empty:
                     continue
                 # Strip whitespace from team names to prevent " Pirates " != "Pirates" bugs
@@ -370,6 +384,8 @@ def save_index(sessions):
                     if col in pdf.columns:
                         pdf[col] = pdf[col].astype(str).str.strip()
                 pdf = pdf.drop_duplicates("SessionID").dropna(subset=["SessionID"])
+                # Override the date with the filename — this is the ground truth
+                pdf["GameDate"] = file_date
                 disk_rows.append(pdf)
             except Exception as e:
                 print(f"  Warning: could not read {fname} for index rebuild ({e})")
