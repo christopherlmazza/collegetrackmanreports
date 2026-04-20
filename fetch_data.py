@@ -331,31 +331,83 @@ def load_index():
     return pd.read_parquet(INDEX_PATH)
 
 def save_index(sessions):
+    """
+    Write data/index.parquet from two sources combined:
+      1. The `sessions` list passed in (fresh from API this run)
+      2. EVERY parquet file that exists in data/by_date/  <-- self-healing
+
+    This guarantees the index never drifts from what's actually on disk.
+    If a date parquet exists but its sessions aren't in `sessions`, we
+    pull HomeTeam/AwayTeam/SessionID from the parquet itself.
+    """
+    # ── Source 1: fresh sessions from API ──
     rows = []
     for s in sessions:
         rows.append({
             "SessionID": s.get("sessionId",""),
             "GameDate":  (s.get("gameDateLocal") or s.get("gameDateUtc") or "")[:10],
-            "HomeTeam":  s.get("homeTeam",{}).get("name",""),
-            "AwayTeam":  s.get("awayTeam",{}).get("name",""),
+            "HomeTeam":  (s.get("homeTeam",{}).get("name","") or "").strip(),
+            "AwayTeam":  (s.get("awayTeam",{}).get("name","") or "").strip(),
         })
-    new_df = pd.DataFrame(rows).drop_duplicates("SessionID")
-    new_df["GameDate"] = pd.to_datetime(new_df["GameDate"], errors="coerce").dt.date
+    api_df = pd.DataFrame(rows)
+    if not api_df.empty:
+        api_df["GameDate"] = pd.to_datetime(api_df["GameDate"], errors="coerce").dt.date
 
-    # Merge with existing index so we never lose historical sessions
+    # ── Source 2: scan by_date/ directly and extract from each parquet ──
+    disk_rows = []
+    if os.path.isdir(BY_DATE_DIR):
+        for fname in os.listdir(BY_DATE_DIR):
+            if not fname.endswith(".parquet"):
+                continue
+            fpath = os.path.join(BY_DATE_DIR, fname)
+            try:
+                # Only read the columns we need for the index — tiny + fast
+                pdf = pd.read_parquet(fpath, columns=["GameDate","HomeTeam","AwayTeam","SessionID"])
+                if pdf.empty:
+                    continue
+                # Strip whitespace from team names to prevent " Pirates " != "Pirates" bugs
+                for col in ("HomeTeam", "AwayTeam"):
+                    if col in pdf.columns:
+                        pdf[col] = pdf[col].astype(str).str.strip()
+                pdf = pdf.drop_duplicates("SessionID").dropna(subset=["SessionID"])
+                disk_rows.append(pdf)
+            except Exception as e:
+                print(f"  Warning: could not read {fname} for index rebuild ({e})")
+    disk_df = pd.concat(disk_rows, ignore_index=True) if disk_rows else pd.DataFrame()
+    if not disk_df.empty:
+        disk_df["GameDate"] = pd.to_datetime(disk_df["GameDate"], errors="coerce").dt.date
+
+    # ── Source 3 (legacy): merge with existing index.parquet so historical sessions
+    #     with no parquet on disk yet (shouldn't happen, but just in case) are preserved.
+    legacy_df = pd.DataFrame()
     if os.path.exists(INDEX_PATH) and os.path.getsize(INDEX_PATH) > 0:
         try:
-            existing = pd.read_parquet(INDEX_PATH)
-            existing["GameDate"] = pd.to_datetime(existing["GameDate"], errors="coerce").dt.date
-            df = pd.concat([existing, new_df], ignore_index=True).drop_duplicates("SessionID")
+            legacy_df = pd.read_parquet(INDEX_PATH)
+            legacy_df["GameDate"] = pd.to_datetime(legacy_df["GameDate"], errors="coerce").dt.date
         except Exception:
-            df = new_df
-    else:
-        df = new_df
+            legacy_df = pd.DataFrame()
 
-    df.to_parquet(INDEX_PATH, index=False)
-    print(f"  Index saved: {len(df)} games")
-    return df
+    # ── Combine: disk wins over api wins over legacy (disk is ground truth) ──
+    # Stack in reverse priority so drop_duplicates(keep="last") keeps highest priority
+    parts = [p for p in [legacy_df, api_df, disk_df] if not p.empty]
+    if not parts:
+        print("  Index: no sessions to save")
+        return pd.DataFrame()
+    combined = pd.concat(parts, ignore_index=True)
+    combined = combined[["SessionID","GameDate","HomeTeam","AwayTeam"]]
+    combined = combined.drop_duplicates("SessionID", keep="last")
+    combined = combined.dropna(subset=["SessionID","GameDate"])
+    combined = combined.sort_values("GameDate").reset_index(drop=True)
+
+    combined.to_parquet(INDEX_PATH, index=False)
+
+    # Summary log — useful when debugging stale index issues
+    min_d = combined["GameDate"].min() if not combined.empty else "n/a"
+    max_d = combined["GameDate"].max() if not combined.empty else "n/a"
+    n_from_disk = len(disk_df) if not disk_df.empty else 0
+    print(f"  Index saved: {len(combined)} games "
+          f"(min {min_d}, max {max_d}, {n_from_disk} cross-checked from by_date/)")
+    return combined
 
 # ===========================================================================
 # MIGRATION
@@ -491,6 +543,8 @@ def main():
     print(f"\n  Total new pitches: {total_new}")
 
     print(f"\n[3/3] Saving index...")
+    # Always rebuild the index from disk + API — guarantees it includes every
+    # date file in by_date/, even if save_index was called with stale/missing sessions.
     save_index(d1)
     _write_timestamp()
     print(f"\n  Done! {len(new_sessions)} new games added.")
