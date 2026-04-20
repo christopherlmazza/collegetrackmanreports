@@ -554,9 +554,17 @@ def load_team_data(team_name, date_from, date_to):
     if idx.empty:
         return None
 
+    # Normalize the team name we're searching for (strip whitespace)
+    team_name = str(team_name).strip() if team_name else team_name
+
     # Find dates this team played in range
     idx = idx.copy()
     idx["GameDate"] = pd.to_datetime(idx["GameDate"], errors="coerce").dt.date
+    # Normalize index team columns — cast to string and strip whitespace
+    # so "East Carolina Pirates " matches "East Carolina Pirates" etc.
+    for col in ("HomeTeam", "AwayTeam"):
+        if col in idx.columns:
+            idx[col] = idx[col].astype(str).str.strip()
     if hasattr(date_from, "date"): date_from = date_from.date()
     if hasattr(date_to, "date"): date_to = date_to.date()
     team_mask = (
@@ -575,6 +583,12 @@ def load_team_data(team_name, date_from, date_to):
             fpath = os.path.join(BY_DATE_DIR, f"{gdate}.parquet")
             if os.path.exists(fpath):
                 df = pd.read_parquet(fpath)
+                # Normalize team columns FIRST — parquet files store these as
+                # categorical dtype sometimes, and can have trailing whitespace
+                # that breaks exact equality comparisons.
+                for col in ("HomeTeam", "AwayTeam"):
+                    if col in df.columns:
+                        df[col] = df[col].astype(str).str.strip()
                 # Filter to only rows involving this team
                 mask = (df["HomeTeam"] == team_name) | (df["AwayTeam"] == team_name)
                 dfs.append(df[mask])
@@ -583,6 +597,9 @@ def load_team_data(team_name, date_from, date_to):
         legacy = os.path.join(DATA_DIR, "pitches.parquet")
         if os.path.exists(legacy):
             df = pd.read_parquet(legacy)
+            for col in ("HomeTeam", "AwayTeam"):
+                if col in df.columns:
+                    df[col] = df[col].astype(str).str.strip()
             df["GameDate"] = pd.to_datetime(df["GameDate"], errors="coerce").dt.date
             mask = (
                 ((df["HomeTeam"] == team_name) | (df["AwayTeam"] == team_name)) &
@@ -636,13 +653,21 @@ def get_teams(df):
     teams = set()
     for col in ["HomeTeam", "AwayTeam"]:
         if col in df.columns:
-            teams.update(df[col].dropna().unique())
+            # Cast to string and strip whitespace — the parquet files sometimes
+            # store team names as categorical dtype with trailing spaces, which
+            # breaks downstream equality comparisons (" Pirates " != "Pirates").
+            teams.update(df[col].dropna().astype(str).str.strip().unique())
     return sorted(t for t in teams if t)
 
 def get_team_pitches(df, team_name, date_from, date_to):
     """Filter to pitches thrown by pitchers on the selected team. Normalizes date types."""
     df = df.copy()
     df["GameDate"] = pd.to_datetime(df["GameDate"], errors="coerce").dt.date
+    # Normalize team columns so matching is robust to categorical dtype and whitespace
+    for col in ("HomeTeam", "AwayTeam"):
+        if col in df.columns:
+            df[col] = df[col].astype(str).str.strip()
+    team_name = str(team_name).strip() if team_name else team_name
     if hasattr(date_from, "date"): date_from = date_from.date()
     if hasattr(date_to, "date"): date_to = date_to.date()
     date_mask = (df["GameDate"] >= date_from) & (df["GameDate"] <= date_to)
@@ -1365,6 +1390,11 @@ def get_team_batting(df, team_name, date_from, date_to):
     """Filter to at-bats where the selected team was BATTING."""
     df = df.copy()
     df["GameDate"] = pd.to_datetime(df["GameDate"], errors="coerce").dt.date
+    # Normalize team columns so matching is robust to categorical dtype and whitespace
+    for col in ("HomeTeam", "AwayTeam"):
+        if col in df.columns:
+            df[col] = df[col].astype(str).str.strip()
+    team_name = str(team_name).strip() if team_name else team_name
     if hasattr(date_from, "date"): date_from = date_from.date()
     if hasattr(date_to, "date"): date_to = date_to.date()
     date_mask = (df["GameDate"] >= date_from) & (df["GameDate"] <= date_to)
