@@ -714,9 +714,25 @@ def get_teams(df):
 def get_team_pitches(df, team_name, date_from, date_to):
     """Filter to pitches thrown by pitchers on the selected team. Normalizes date types."""
     df = df.copy()
-    # Force GameDate to plain date objects — without this, comparisons with
-    # Python date objects raise TypeError when the column is datetime64[ns].
-    df["GameDate"] = pd.to_datetime(df["GameDate"], errors="coerce").dt.date
+    # Bulletproof GameDate → plain Python date conversion.
+    # Handles: datetime64[ns], datetime64[ns, UTC], tz-aware objects,
+    # strings, existing date objects. Output is guaranteed object dtype with
+    # Python `date` objects (or NaT/None) — safe to compare with other dates.
+    def _row_to_date(v):
+        if v is None or pd.isna(v):
+            return None
+        if isinstance(v, date) and not isinstance(v, datetime):
+            return v
+        try:
+            ts = pd.Timestamp(v)
+            if ts.tzinfo is not None:
+                ts = ts.tz_convert(None) if hasattr(ts, "tz_convert") else ts.tz_localize(None)
+            return ts.date()
+        except Exception:
+            return None
+    df["GameDate"] = df["GameDate"].apply(_row_to_date)
+    # Drop rows that couldn't be parsed so we're not comparing None to date
+    df = df[df["GameDate"].notna()]
     # Normalize team columns so matching is robust to categorical dtype and whitespace
     for col in ("HomeTeam", "AwayTeam"):
         if col in df.columns:
