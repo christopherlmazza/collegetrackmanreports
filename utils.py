@@ -621,10 +621,15 @@ def load_team_data(team_name, date_from, date_to, _cache_version="v3"):
             fpath = os.path.join(BY_DATE_DIR, f"{gdate}.parquet")
             if os.path.exists(fpath):
                 df = pd.read_parquet(fpath)
+                # Overwrite GameDate with the filename date — this is the
+                # ground truth. Late-night games can have internal GameDate
+                # values off by a day due to UTC/local timezone shifts,
+                # which breaks downstream date filters.
+                df["GameDate"] = gdate
                 # Normalize team columns FIRST — parquet files store these as
                 # categorical dtype sometimes, and can have trailing whitespace
                 # that breaks exact equality comparisons.
-                for col in ("HomeTeam", "AwayTeam"):
+                for col in ("HomeTeam", "AwayTeam", "TopBottom"):
                     if col in df.columns:
                         df[col] = df[col].astype(str).str.strip()
                 # Filter to only rows involving this team
@@ -714,27 +719,27 @@ def get_teams(df):
 def get_team_pitches(df, team_name, date_from, date_to):
     """Filter to pitches thrown by pitchers on the selected team. Normalizes date types."""
     df = df.copy()
-    # Bulletproof GameDate → plain Python date conversion.
-    # Handles: datetime64[ns], datetime64[ns, UTC], tz-aware objects,
-    # strings, existing date objects. Output is guaranteed object dtype with
-    # Python `date` objects (or NaT/None) — safe to compare with other dates.
-    def _row_to_date(v):
-        if v is None or pd.isna(v):
-            return None
-        if isinstance(v, date) and not isinstance(v, datetime):
-            return v
-        try:
-            ts = pd.Timestamp(v)
-            if ts.tzinfo is not None:
-                ts = ts.tz_convert(None) if hasattr(ts, "tz_convert") else ts.tz_localize(None)
-            return ts.date()
-        except Exception:
-            return None
-    df["GameDate"] = df["GameDate"].apply(_row_to_date)
-    # Drop rows that couldn't be parsed so we're not comparing None to date
-    df = df[df["GameDate"].notna()]
-    # Normalize team columns so matching is robust to categorical dtype and whitespace
-    for col in ("HomeTeam", "AwayTeam"):
+    # Vectorized GameDate → plain Python date conversion.
+    # Handles datetime64[ns], datetime64[ns, UTC], strings, and existing dates.
+    # Why not `.dt.date`? On tz-aware series that returns datetime64 still.
+    # We cast to int64 nanoseconds (stripping tz if any), then rebuild as naive
+    # datetime, then extract .date.
+    gd_raw = df["GameDate"]
+    try:
+        # First try a simple parse
+        gd = pd.to_datetime(gd_raw, errors="coerce")
+        # If tz-aware, strip tz
+        if hasattr(gd, "dt") and gd.dt.tz is not None:
+            gd = gd.dt.tz_convert("UTC").dt.tz_localize(None)
+        df["GameDate"] = gd.dt.date
+    except Exception:
+        # Fallback: row-wise convert if the above fails for mixed dtypes
+        df["GameDate"] = pd.to_datetime(gd_raw.astype(str), errors="coerce").dt.date
+
+    # Cast EVERY filterable column out of categorical to string — categorical
+    # comparisons silently return False when the compared value isn't in the
+    # category list. This is the #1 pandas filtering gotcha.
+    for col in ("HomeTeam", "AwayTeam", "TopBottom"):
         if col in df.columns:
             df[col] = df[col].astype(str).str.strip()
     team_name = str(team_name).strip() if team_name else team_name
@@ -1461,8 +1466,8 @@ def get_team_batting(df, team_name, date_from, date_to):
     """Filter to at-bats where the selected team was BATTING."""
     df = df.copy()
     df["GameDate"] = pd.to_datetime(df["GameDate"], errors="coerce").dt.date
-    # Normalize team columns so matching is robust to categorical dtype and whitespace
-    for col in ("HomeTeam", "AwayTeam"):
+    # Cast out of categorical so comparisons work
+    for col in ("HomeTeam", "AwayTeam", "TopBottom"):
         if col in df.columns:
             df[col] = df[col].astype(str).str.strip()
     team_name = str(team_name).strip() if team_name else team_name
