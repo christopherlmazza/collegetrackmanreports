@@ -529,8 +529,9 @@ def _prep_df(df):
     return df
 
 @st.cache_data(ttl=3600)
-def load_index():
-    """Load lightweight game index — used for sidebar dropdowns. Tiny and fast."""
+def load_index(_cache_version="v3"):
+    """Load lightweight game index — used for sidebar dropdowns. Tiny and fast.
+    _cache_version: bump this string to bust the Streamlit Cloud cache."""
     # Support both new index.parquet and legacy pitches.parquet
     if os.path.exists(INDEX_PATH):
         df = pd.read_parquet(INDEX_PATH)
@@ -544,18 +545,40 @@ def load_index():
         return df.drop_duplicates(subset=["GameDate","HomeTeam","AwayTeam"])
     return pd.DataFrame()
 
+def _to_date(x):
+    """Convert anything datey (date, datetime, pandas Timestamp, string) to a plain date."""
+    if x is None:
+        return None
+    if hasattr(x, "date") and callable(x.date):
+        try:
+            return x.date()
+        except Exception:
+            pass
+    try:
+        return pd.to_datetime(x).date()
+    except Exception:
+        return x
+
 @st.cache_data(ttl=300)
-def load_team_data(team_name, date_from, date_to):
+def load_team_data(team_name, date_from, date_to, _cache_version="v3"):
     """
     Load only the date files where the selected team played in the date range.
     Returns ~5-50MB instead of the full 800MB+ season dataset.
+    _cache_version: bump this string to bust the Streamlit Cloud cache.
     """
+    _debug_lines = []  # collect diagnostic breadcrumbs
+
     idx = load_index()
     if idx.empty:
+        _debug_lines.append("index is EMPTY")
+        with st.sidebar.expander("🔍 load_team_data debug", expanded=True):
+            st.code("\n".join(_debug_lines))
         return None
 
     # Normalize the team name we're searching for (strip whitespace)
     team_name = str(team_name).strip() if team_name else team_name
+    _debug_lines.append(f"team_name (normalized) = {team_name!r}")
+    _debug_lines.append(f"date_from={date_from}  date_to={date_to}")
 
     # Find dates this team played in range
     idx = idx.copy()
@@ -565,34 +588,65 @@ def load_team_data(team_name, date_from, date_to):
     for col in ("HomeTeam", "AwayTeam"):
         if col in idx.columns:
             idx[col] = idx[col].astype(str).str.strip()
-    if hasattr(date_from, "date"): date_from = date_from.date()
-    if hasattr(date_to, "date"): date_to = date_to.date()
+    date_from = _to_date(date_from)
+    date_to   = _to_date(date_to)
+
+    # Report index coverage for this team
+    team_in_idx_total = ((idx["HomeTeam"] == team_name) | (idx["AwayTeam"] == team_name)).sum()
+    _debug_lines.append(f"index rows with this team (any date): {team_in_idx_total}")
+    if team_in_idx_total > 0:
+        team_dates_all = sorted(
+            idx[(idx["HomeTeam"] == team_name) | (idx["AwayTeam"] == team_name)]["GameDate"]
+            .dropna().unique()
+        )
+        _debug_lines.append(f"all dates for this team in index: {[str(d) for d in team_dates_all[-5:]]}")
+
     team_mask = (
         (idx["HomeTeam"] == team_name) | (idx["AwayTeam"] == team_name)
     ) & (idx["GameDate"] >= date_from) & (idx["GameDate"] <= date_to)
     team_dates = sorted(idx[team_mask]["GameDate"].dropna().unique())
+    _debug_lines.append(f"dates matching team+range: {[str(d) for d in team_dates]}")
 
     if not team_dates:
+        with st.sidebar.expander("🔍 load_team_data debug", expanded=True):
+            st.code("\n".join(_debug_lines))
         return pd.DataFrame()
 
     dfs = []
 
     # New partitioned structure
     if os.path.exists(BY_DATE_DIR):
+        _debug_lines.append(f"BY_DATE_DIR exists at {BY_DATE_DIR}")
         for gdate in team_dates:
             fpath = os.path.join(BY_DATE_DIR, f"{gdate}.parquet")
             if os.path.exists(fpath):
                 df = pd.read_parquet(fpath)
+                # Overwrite GameDate with the filename date — this is the
+                # ground truth. Late-night games can have internal GameDate
+                # values off by a day due to UTC/local timezone shifts,
+                # which breaks downstream date filters.
+                df["GameDate"] = gdate
                 # Normalize team columns FIRST — parquet files store these as
                 # categorical dtype sometimes, and can have trailing whitespace
                 # that breaks exact equality comparisons.
-                for col in ("HomeTeam", "AwayTeam"):
+                for col in ("HomeTeam", "AwayTeam", "TopBottom"):
                     if col in df.columns:
                         df[col] = df[col].astype(str).str.strip()
                 # Filter to only rows involving this team
                 mask = (df["HomeTeam"] == team_name) | (df["AwayTeam"] == team_name)
+                n_match = int(mask.sum())
+                _debug_lines.append(f"  {gdate}.parquet: {len(df)} rows, {n_match} match team")
+                if n_match == 0 and len(df) > 0:
+                    # Show what team names ARE in that file so we can see the mismatch
+                    unique_home = df["HomeTeam"].dropna().unique()[:15]
+                    unique_away = df["AwayTeam"].dropna().unique()[:15]
+                    _debug_lines.append(f"    HomeTeams sample: {list(unique_home)}")
+                    _debug_lines.append(f"    AwayTeams sample: {list(unique_away)}")
                 dfs.append(df[mask])
+            else:
+                _debug_lines.append(f"  {gdate}.parquet: FILE MISSING at {fpath}")
     else:
+        _debug_lines.append(f"BY_DATE_DIR does NOT exist at {BY_DATE_DIR}")
         # Fall back to legacy single parquet
         legacy = os.path.join(DATA_DIR, "pitches.parquet")
         if os.path.exists(legacy):
@@ -606,6 +660,9 @@ def load_team_data(team_name, date_from, date_to):
                 (df["GameDate"] >= date_from) & (df["GameDate"] <= date_to)
             )
             dfs.append(df[mask])
+
+    with st.sidebar.expander("🔍 load_team_data debug", expanded=True):
+        st.code("\n".join(_debug_lines))
 
     if not dfs:
         return pd.DataFrame()
@@ -662,14 +719,33 @@ def get_teams(df):
 def get_team_pitches(df, team_name, date_from, date_to):
     """Filter to pitches thrown by pitchers on the selected team. Normalizes date types."""
     df = df.copy()
-    df["GameDate"] = pd.to_datetime(df["GameDate"], errors="coerce").dt.date
-    # Normalize team columns so matching is robust to categorical dtype and whitespace
-    for col in ("HomeTeam", "AwayTeam"):
+    # Vectorized GameDate → plain Python date conversion.
+    # Handles datetime64[ns], datetime64[ns, UTC], strings, and existing dates.
+    # Why not `.dt.date`? On tz-aware series that returns datetime64 still.
+    # We cast to int64 nanoseconds (stripping tz if any), then rebuild as naive
+    # datetime, then extract .date.
+    gd_raw = df["GameDate"]
+    try:
+        # First try a simple parse
+        gd = pd.to_datetime(gd_raw, errors="coerce")
+        # If tz-aware, strip tz
+        if hasattr(gd, "dt") and gd.dt.tz is not None:
+            gd = gd.dt.tz_convert("UTC").dt.tz_localize(None)
+        df["GameDate"] = gd.dt.date
+    except Exception:
+        # Fallback: row-wise convert if the above fails for mixed dtypes
+        df["GameDate"] = pd.to_datetime(gd_raw.astype(str), errors="coerce").dt.date
+
+    # Cast EVERY filterable column out of categorical to string — categorical
+    # comparisons silently return False when the compared value isn't in the
+    # category list. This is the #1 pandas filtering gotcha.
+    for col in ("HomeTeam", "AwayTeam", "TopBottom"):
         if col in df.columns:
             df[col] = df[col].astype(str).str.strip()
     team_name = str(team_name).strip() if team_name else team_name
-    if hasattr(date_from, "date"): date_from = date_from.date()
-    if hasattr(date_to, "date"): date_to = date_to.date()
+    # Normalize date bounds into plain date objects
+    date_from = _to_date(date_from)
+    date_to   = _to_date(date_to)
     date_mask = (df["GameDate"] >= date_from) & (df["GameDate"] <= date_to)
     mask = date_mask & (
         ((df["HomeTeam"] == team_name) & (df["TopBottom"] == "Top")) |
@@ -1390,13 +1466,13 @@ def get_team_batting(df, team_name, date_from, date_to):
     """Filter to at-bats where the selected team was BATTING."""
     df = df.copy()
     df["GameDate"] = pd.to_datetime(df["GameDate"], errors="coerce").dt.date
-    # Normalize team columns so matching is robust to categorical dtype and whitespace
-    for col in ("HomeTeam", "AwayTeam"):
+    # Cast out of categorical so comparisons work
+    for col in ("HomeTeam", "AwayTeam", "TopBottom"):
         if col in df.columns:
             df[col] = df[col].astype(str).str.strip()
     team_name = str(team_name).strip() if team_name else team_name
-    if hasattr(date_from, "date"): date_from = date_from.date()
-    if hasattr(date_to, "date"): date_to = date_to.date()
+    date_from = _to_date(date_from)
+    date_to   = _to_date(date_to)
     date_mask = (df["GameDate"] >= date_from) & (df["GameDate"] <= date_to)
     mask = date_mask & (
         ((df["HomeTeam"] == team_name) & (df["TopBottom"] == "Bottom")) |
