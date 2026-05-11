@@ -231,11 +231,12 @@ warnings.filterwarnings("ignore")
 STRIKE_CALLS = {"StrikeCalled", "StrikeSwinging", "FoulBallNotFieldable", "InPlay"}
 SWING_CALLS  = {"StrikeSwinging", "FoulBallNotFieldable", "InPlay"}
 PITCH_COLORS = {
-    "Fastball": "#D32F2F", "FourSeamFastBall": "#D32F2F",
-    "Sinker": "#E65100", "TwoSeamFastBall": "#E65100",
+    "Fastball": "#D32F2F", "FourSeamFastBall": "#D32F2F", "Four-Seam": "#D32F2F",
+    "Sinker": "#E65100", "TwoSeamFastBall": "#E65100", "Two-Seam": "#E65100",
     "Cutter": "#B8A000", "Slider": "#00897B", "Curveball": "#1565C0",
     "ChangeUp": "#F9A825", "Changeup": "#F9A825",
-    "Splitter": "#00796B", "Sweeper": "#7B1FA2", "Other": "#888888",
+    "Splitter": "#00796B", "Sweeper": "#7B1FA2",
+    "Knuckleball": "#9E9E9E", "Other": "#888888",
 }
 BG_COLOR = "#FFFFFF"
 PANEL_COLOR = "#F7F8FA"
@@ -317,9 +318,19 @@ def sf(v):
     except: return np.nan
 
 def resolve_pt(row):
-    t = row.get("TaggedPitchType", ""); a = row.get("AutoPitchType", "")
-    if t and t not in ("", "Undefined"): return t
-    if a and a not in ("", "Undefined"): return a
+    """
+    Resolve the pitch type for a row.
+    PRIORITY: AutoPitchType (TrackMan's automatic classification based on
+    spin/movement/velo) over TaggedPitchType (operator-entered).
+    Auto is more reliable because manual taggers frequently misclassify
+    pitches based on outcome (e.g. a hung slider tagged as a changeup).
+    Falls back to Tagged only when Auto is empty/Undefined, then "Other".
+    """
+    # Cast to string to avoid categorical-dtype comparison issues
+    a = str(row.get("AutoPitchType", "") or "").strip()
+    t = str(row.get("TaggedPitchType", "") or "").strip()
+    if a and a not in ("", "Undefined", "nan", "None"): return a
+    if t and t not in ("", "Undefined", "nan", "None"): return t
     return "Other"
 
 def calc_xwoba(ev, la):
@@ -515,7 +526,17 @@ DATA_DIR    = os.path.join(os.path.dirname(os.path.abspath(__file__)) if "__file
 BY_DATE_DIR = os.path.join(DATA_DIR, "by_date")
 INDEX_PATH  = os.path.join(DATA_DIR, "index.parquet")
 
-PT_NORMALIZE = {"FourSeamFastBall":"Fastball","TwoSeamFastBall":"Sinker","Changeup":"ChangeUp"}
+PT_NORMALIZE = {
+    # ── Auto names → canonical ──
+    "Four-Seam": "Fastball",
+    "Two-Seam":  "Sinker",
+    "Changeup":  "ChangeUp",
+    # ── Tagged names → canonical (some already match) ──
+    "FourSeamFastBall": "Fastball",
+    "TwoSeamFastBall":  "Sinker",
+    # Fastball, Sinker, Cutter, Slider, Curveball, ChangeUp, Splitter,
+    # Sweeper, Knuckleball, Other already canonical and pass through unchanged.
+}
 
 def _prep_df(df):
     """Shared post-load cleanup."""
@@ -529,7 +550,7 @@ def _prep_df(df):
     return df
 
 @st.cache_data(ttl=3600)
-def load_index(_cache_version="v3"):
+def load_index(_cache_version="v4"):
     """Load lightweight game index — used for sidebar dropdowns. Tiny and fast.
     _cache_version: bump this string to bust the Streamlit Cloud cache."""
     # Support both new index.parquet and legacy pitches.parquet
@@ -560,7 +581,7 @@ def _to_date(x):
         return x
 
 @st.cache_data(ttl=300)
-def load_team_data(team_name, date_from, date_to, _cache_version="v3"):
+def load_team_data(team_name, date_from, date_to, _cache_version="v4"):
     """
     Load only the date files where the selected team played in the date range.
     Returns ~5-50MB instead of the full 800MB+ season dataset.
