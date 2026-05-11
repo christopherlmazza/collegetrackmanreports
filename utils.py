@@ -435,9 +435,12 @@ def _cluster_pitcher_pitches(pdf, min_cluster_size=5):
 
     try:
         from sklearn.cluster import DBSCAN
-        eps = 0.9       # neighborhood radius in scaled units
-        # Tighter min_samples for low-volume pitchers, looser for starters
-        min_samp = max(3, min(8, int(valid.sum() * 0.04)))
+        # Wider eps so natural variance (a few mph velo, a few inches HB) doesn't
+        # split one pitch type into two clusters.
+        eps = 1.3
+        # Looser min_samples for low-volume pitchers, tighter for starters.
+        # But cap min_samples low so a starter's secondary pitches still cluster.
+        min_samp = max(3, min(5, int(valid.sum() * 0.03)))
         labels = DBSCAN(eps=eps, min_samples=min_samp).fit_predict(Xn)
         pdf.loc[valid, "_cluster"] = labels
     except Exception:
@@ -555,21 +558,42 @@ def classify_pitches_for_pitcher(pdf):
     for c, cs in stats.items():
         cluster_to_label[c] = _label_cluster(cs, fb_stats, is_primary_fb=(c == fb_cluster))
 
-    # If two clusters got the same label, disambiguate (rare but possible).
-    # E.g. two "Slider" clusters → name them by velo: faster = Slider, slower = Curveball
-    # if the slower one has 5+ inches of depth.
+    # If two+ clusters got the same label, disambiguate intelligently.
+    # E.g. two "Slider" clusters: faster keeps name, slower may become Curveball/Sweeper.
+    # E.g. two "ChangeUp" clusters: just merge — they're the same pitch with natural variance.
     label_counts = {}
     for c, lbl in cluster_to_label.items():
         label_counts[lbl] = label_counts.get(lbl, 0) + 1
-    for lbl, cnt in label_counts.items():
-        if cnt > 1 and lbl == "Slider":
-            same = [c for c, l in cluster_to_label.items() if l == "Slider"]
+
+    for lbl, cnt in list(label_counts.items()):
+        if cnt <= 1:
+            continue
+        same = [c for c, l in cluster_to_label.items() if l == lbl]
+
+        if lbl == "Slider":
+            # Faster stays Slider; slower demoted based on shape
             same_sorted = sorted(same, key=lambda c: stats[c]["velo"], reverse=True)
-            for c in same_sorted[1:]:  # keep fastest as Slider, demote others
+            for c in same_sorted[1:]:
                 if stats[c]["ivb"] <= 0:
                     cluster_to_label[c] = "Curveball"
-                else:
-                    cluster_to_label[c] = "Sweeper" if abs(stats[c]["hb_mirror"]) >= 10 else "Slider"
+                elif abs(stats[c]["hb_mirror"]) >= 10:
+                    cluster_to_label[c] = "Sweeper"
+                # else: keep as Slider, will get merged below
+        elif lbl == "Fastball":
+            # Two fastball clusters → likely 4-seam vs sinker.
+            # Hardest stays Fastball; second one re-labeled by movement.
+            same_sorted = sorted(same, key=lambda c: stats[c]["velo"], reverse=True)
+            for c in same_sorted[1:]:
+                cs = stats[c]
+                if cs["ivb"] < 10 and cs["hb_mirror"] >= cs["ivb"]:
+                    cluster_to_label[c] = "Sinker"
+                elif cs["ivb"] >= 5 and -5 <= cs["hb_mirror"] <= 5:
+                    cluster_to_label[c] = "Cutter"
+                # else: keep as Fastball, will get merged below
+
+    # FINAL MERGE: any remaining duplicate labels just collapse into the same
+    # pitch type. Variance within one pitch is normal and shouldn't split into
+    # two reported pitch types in the report.
 
     # Apply labels back to the dataframe
     pdf = clustered.drop(columns=["_hb_mirror"], errors="ignore")
@@ -577,6 +601,10 @@ def classify_pitches_for_pitcher(pdf):
     # Where clustering produced a label, use it. Otherwise keep original PitchType.
     pdf["PitchType"] = new_labels.where(new_labels.notna(), pdf.get("PitchType", "Other"))
     pdf = pdf.drop(columns=["_cluster"], errors="ignore")
+    # CANONICALIZE: ensure every final label matches one canonical name so the
+    # same physical pitch doesn't appear as both "Fastball" and "Four-Seam",
+    # or "ChangeUp" and "Changeup", in the report.
+    pdf["PitchType"] = pdf["PitchType"].replace(PT_NORMALIZE)
     return pdf
 
 def auto_correct_pitch_types(pitcher_df):
@@ -724,7 +752,7 @@ def _prep_df(df):
     return df
 
 @st.cache_data(ttl=3600)
-def load_index(_cache_version="v5"):
+def load_index(_cache_version="v6"):
     """Load lightweight game index — used for sidebar dropdowns. Tiny and fast.
     _cache_version: bump this string to bust the Streamlit Cloud cache."""
     # Support both new index.parquet and legacy pitches.parquet
