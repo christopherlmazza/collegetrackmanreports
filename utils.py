@@ -392,38 +392,212 @@ def in_zone(s):
             (s["PlateLocSide"].abs() <= 0.95) &
             (s["PlateLocHeight"] >= 1.6) & (s["PlateLocHeight"] <= 3.5))
 
+# ===========================================================================
+# RULE-BASED PITCH CLASSIFIER
+# ===========================================================================
+# Replaces TaggedPitchType / AutoPitchType. For each pitcher, we cluster their
+# pitches in (velo, IVB, HB, spin) space, identify their primary fastball, and
+# label every other cluster RELATIVE to that fastball. This matches how college
+# pitchers actually throw — pitch labels are relative to a pitcher's arsenal,
+# not absolute movement ranges. RHP rules; HB is mirrored for LHP so the same
+# rules work for both.
+
+def _infer_hand_for_pitcher(pdf):
+    """LHP if median RelSide < 0, else RHP. Returns 'L' or 'R'."""
+    rs = pd.to_numeric(pdf.get("RelSide"), errors="coerce").dropna()
+    if len(rs) == 0:
+        return "R"
+    return "L" if rs.median() < 0 else "R"
+
+def _cluster_pitcher_pitches(pdf, min_cluster_size=5):
+    """
+    Cluster a single pitcher's pitches in (velo, IVB, HB_mirrored, spin) space.
+    Uses DBSCAN for shape-flexible clusters (pitchers don't all have N pitches).
+    Returns the input df with a new '_cluster' int column. -1 = noise/uncluster.
+    """
+    feats = ["RelSpeed", "InducedVertBreak", "HorzBreak", "SpinRate"]
+    pdf = pdf.copy()
+    pdf["_hb_mirror"] = pdf["HorzBreak"]
+    is_lhp = _infer_hand_for_pitcher(pdf) == "L"
+    if is_lhp:
+        pdf["_hb_mirror"] = -pdf["_hb_mirror"]
+
+    valid = pdf[feats].notna().all(axis=1) & pdf["_hb_mirror"].notna()
+    pdf["_cluster"] = -1
+    if valid.sum() < min_cluster_size:
+        return pdf, is_lhp
+
+    X = pdf.loc[valid, ["RelSpeed", "InducedVertBreak", "_hb_mirror", "SpinRate"]].values
+    # Normalize: velo and spin have very different scales than IVB/HB.
+    # Use scale factors that roughly equalize their importance.
+    scales = np.array([2.0, 4.0, 4.0, 250.0])  # velo, ivb, hb, spin
+    Xn = X / scales
+
+    try:
+        from sklearn.cluster import DBSCAN
+        eps = 0.9       # neighborhood radius in scaled units
+        # Tighter min_samples for low-volume pitchers, looser for starters
+        min_samp = max(3, min(8, int(valid.sum() * 0.04)))
+        labels = DBSCAN(eps=eps, min_samples=min_samp).fit_predict(Xn)
+        pdf.loc[valid, "_cluster"] = labels
+    except Exception:
+        pdf["_cluster"] = -1
+    return pdf, is_lhp
+
+def _label_cluster(cluster_stats, fb_stats, is_primary_fb):
+    """
+    Assign a pitch label to a single cluster.
+    cluster_stats: dict with 'velo','ivb','hb_mirror','spin' (means for cluster)
+    fb_stats: same, for the primary fastball cluster (the hardest cluster)
+    is_primary_fb: True if this cluster IS the primary fastball
+    Returns one of: Fastball, Sinker, Cutter, Changeup, Splitter,
+                    Curveball, Slider, Sweeper, Other
+    """
+    velo  = cluster_stats["velo"]
+    ivb   = cluster_stats["ivb"]
+    hb    = cluster_stats["hb_mirror"]   # already mirrored: + = arm side
+    spin  = cluster_stats["spin"]
+    fb_velo = fb_stats["velo"]
+    fb_hb   = fb_stats["hb_mirror"]
+    fb_ivb  = fb_stats["ivb"]
+
+    # ── 1. PRIMARY FASTBALL CLUSTER LABELING ──
+    if is_primary_fb:
+        # Sinker: low ride AND arm-side run >= ride (or sub-10 IVB w/ matching HB)
+        if ivb < 10 and hb >= ivb:
+            return "Sinker"
+        # Cutter (as primary): ride 5+, HB within ±5
+        if ivb >= 5 and -5 <= hb <= 5:
+            return "Cutter"
+        # Fastball: default for hardest cluster
+        return "Fastball"
+
+    # ── 2. SPLITTER: low spin + slower ──
+    if spin < 1500 and velo < fb_velo - 5:
+        return "Splitter"
+
+    # ── 3. SWEEPER: glove-side break (opposite of FB's arm side) AND big sweep ──
+    # Mirrored: arm side is positive. Sweep = hb is at least 10" the OTHER way
+    # (negative once we've mirrored). For pitchers whose FB is a cutter (~0 HB),
+    # use absolute HB direction.
+    if fb_hb > 3:
+        # Standard pitcher: FB has arm-side run, sweeper goes glove-side
+        if hb <= -10:
+            return "Sweeper"
+    else:
+        # Cutter-primary pitcher: anything with 10+ inches of opposite-direction sweep
+        if abs(hb) >= 10 and (hb < 0 or (hb > 0 and ivb < 0)):
+            return "Sweeper"
+
+    # ── 4. CURVEBALL: depth 5+ inches (negative IVB) ──
+    if ivb <= -5:
+        return "Curveball"
+
+    # ── 5. CHANGEUP: 7+ mph slower than FB, arm-side movement matching FB direction ──
+    # "Arm-side run similar to primary fastball" — if FB has arm-side HB, CH should too.
+    # If FB is cutter-like (low HB), CH just needs arm-side run > 5.
+    if velo <= fb_velo - 7:
+        if fb_hb > 3:
+            # FB has arm-side run — CH should match direction (HB > 0, ideally close to fb_hb)
+            if hb > 3:
+                return "ChangeUp"
+        else:
+            # FB is cutter-ish — any arm-side movement is changeup
+            if hb > 5:
+                return "ChangeUp"
+
+    # ── 6. CUTTER: 5+ IVB, HB between -5 and +5, faster than slider ──
+    if ivb >= 5 and -5 <= hb <= 5 and velo >= fb_velo - 8:
+        return "Cutter"
+
+    # ── 7. SLIDER: glove-side break under 10", IVB > -5 ──
+    if hb <= -3 and ivb > -5:
+        return "Slider"
+
+    # ── 8. Catch-all ──
+    return "Other"
+
+def classify_pitches_for_pitcher(pdf):
+    """
+    Run the full rule-based classifier on one pitcher's pitches.
+    Returns a new df with the 'PitchType' column overwritten with our labels.
+    Pitches that couldn't be clustered keep whatever PitchType they came in with
+    (which would be the original Auto/Tagged value from resolve_pt).
+    """
+    pdf = pdf.copy()
+    if len(pdf) < 5:
+        return pdf
+
+    clustered, is_lhp = _cluster_pitcher_pitches(pdf)
+
+    # Compute cluster centroids (means)
+    clusters = sorted(c for c in clustered["_cluster"].unique() if c != -1)
+    if len(clusters) == 0:
+        return pdf  # No usable clusters; keep original labels
+
+    stats = {}
+    for c in clusters:
+        sub = clustered[clustered["_cluster"] == c]
+        stats[c] = {
+            "velo":       float(sub["RelSpeed"].mean()),
+            "ivb":        float(sub["InducedVertBreak"].mean()),
+            "hb_mirror":  float(sub["_hb_mirror"].mean()),
+            "spin":       float(sub["SpinRate"].mean()),
+            "n":          int(len(sub)),
+        }
+
+    # Primary fastball = hardest cluster (highest mean velo)
+    fb_cluster = max(stats, key=lambda c: stats[c]["velo"])
+    fb_stats   = stats[fb_cluster]
+
+    # Label each cluster
+    cluster_to_label = {}
+    for c, cs in stats.items():
+        cluster_to_label[c] = _label_cluster(cs, fb_stats, is_primary_fb=(c == fb_cluster))
+
+    # If two clusters got the same label, disambiguate (rare but possible).
+    # E.g. two "Slider" clusters → name them by velo: faster = Slider, slower = Curveball
+    # if the slower one has 5+ inches of depth.
+    label_counts = {}
+    for c, lbl in cluster_to_label.items():
+        label_counts[lbl] = label_counts.get(lbl, 0) + 1
+    for lbl, cnt in label_counts.items():
+        if cnt > 1 and lbl == "Slider":
+            same = [c for c, l in cluster_to_label.items() if l == "Slider"]
+            same_sorted = sorted(same, key=lambda c: stats[c]["velo"], reverse=True)
+            for c in same_sorted[1:]:  # keep fastest as Slider, demote others
+                if stats[c]["ivb"] <= 0:
+                    cluster_to_label[c] = "Curveball"
+                else:
+                    cluster_to_label[c] = "Sweeper" if abs(stats[c]["hb_mirror"]) >= 10 else "Slider"
+
+    # Apply labels back to the dataframe
+    pdf = clustered.drop(columns=["_hb_mirror"], errors="ignore")
+    new_labels = pdf["_cluster"].map(cluster_to_label)
+    # Where clustering produced a label, use it. Otherwise keep original PitchType.
+    pdf["PitchType"] = new_labels.where(new_labels.notna(), pdf.get("PitchType", "Other"))
+    pdf = pdf.drop(columns=["_cluster"], errors="ignore")
+    return pdf
+
 def auto_correct_pitch_types(pitcher_df):
-    if not AUTO_CORRECT_PITCHES: return pitcher_df, 0
-    df = pitcher_df.copy(); corrections = 0
-    features = ["RelSpeed", "InducedVertBreak", "HorzBreak"]
-    for pname in df["Pitcher"].unique():
-        pmask = df["Pitcher"] == pname; pdf = df[pmask].copy()
-        valid = pdf[features].notna().all(axis=1)
-        if valid.sum() < 5: continue
-        centroids, stds = {}, {}
-        for pt in pdf.loc[valid, "PitchType"].unique():
-            if pt in ("Other", "Undefined", ""): continue
-            ptmask = (pdf["PitchType"] == pt) & valid
-            if ptmask.sum() >= MIN_CLUSTER_SIZE:
-                centroids[pt] = pdf.loc[ptmask, features].mean().values
-                stds[pt] = pdf.loc[ptmask, features].std().values
-                stds[pt] = np.where(stds[pt] < 0.5, 2.0, stds[pt])
-        if len(centroids) < 2: continue
-        for idx in pdf[valid].index:
-            row_vals = pdf.loc[idx, features].values.astype(float)
-            tagged = pdf.loc[idx, "PitchType"]
-            if tagged not in centroids: continue
-            own_max_sd = (np.abs(row_vals - centroids[tagged]) / stds[tagged]).max()
-            if own_max_sd > 2.5:
-                best_type, best_dist = tagged, own_max_sd
-                for other_pt, other_cent in centroids.items():
-                    if other_pt == tagged: continue
-                    other_max_sd = (np.abs(row_vals - other_cent) / stds[other_pt]).max()
-                    if other_max_sd < best_dist and other_max_sd < 1.5:
-                        best_dist = other_max_sd; best_type = other_pt
-                if best_type != tagged:
-                    df.loc[idx, "PitchType"] = best_type; corrections += 1
-    return df, corrections
+    """
+    Backwards-compatible wrapper: now uses the rule-based classifier per pitcher.
+    Returns (df, n_corrections). n_corrections is approximate (count of rows
+    whose label changed vs. input).
+    """
+    if not AUTO_CORRECT_PITCHES:
+        return pitcher_df, 0
+    df = pitcher_df.copy()
+    orig_labels = df.get("PitchType", pd.Series(["Other"] * len(df), index=df.index)).copy()
+    out_parts = []
+    for pname, pdf in df.groupby("Pitcher"):
+        if len(pdf) < 5:
+            out_parts.append(pdf)
+            continue
+        out_parts.append(classify_pitches_for_pitcher(pdf))
+    out = pd.concat(out_parts).loc[df.index]
+    corrections = int((out["PitchType"] != orig_labels).sum())
+    return out, corrections
 
 def fmt(s, fn="mean", d=1):
     v = s.dropna()
@@ -550,7 +724,7 @@ def _prep_df(df):
     return df
 
 @st.cache_data(ttl=3600)
-def load_index(_cache_version="v4"):
+def load_index(_cache_version="v5"):
     """Load lightweight game index — used for sidebar dropdowns. Tiny and fast.
     _cache_version: bump this string to bust the Streamlit Cloud cache."""
     # Support both new index.parquet and legacy pitches.parquet
@@ -581,7 +755,7 @@ def _to_date(x):
         return x
 
 @st.cache_data(ttl=300)
-def load_team_data(team_name, date_from, date_to, _cache_version="v4"):
+def load_team_data(team_name, date_from, date_to, _cache_version="v5"):
     """
     Load only the date files where the selected team played in the date range.
     Returns ~5-50MB instead of the full 800MB+ season dataset.
