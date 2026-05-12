@@ -479,25 +479,23 @@ def _label_cluster(cluster_stats, fb_stats, is_primary_fb):
     if spin < 1500 and velo < fb_velo - 5:
         return "Splitter"
 
-    # ── 3. SWEEPER: glove-side break (opposite of FB's arm side) AND big sweep ──
-    # Mirrored: arm side is positive. Sweep = hb is at least 10" the OTHER way
-    # (negative once we've mirrored). For pitchers whose FB is a cutter (~0 HB),
-    # use absolute HB direction.
-    if fb_hb > 3:
-        # Standard pitcher: FB has arm-side run, sweeper goes glove-side
-        if hb <= -10:
-            return "Sweeper"
-    else:
-        # Cutter-primary pitcher: anything with 10+ inches of opposite-direction sweep
-        if abs(hb) >= 10 and (hb < 0 or (hb > 0 and ivb < 0)):
-            return "Sweeper"
-
-    # ── 4. CURVEBALL: depth 5+ inches AND glove-side break 5+ inches ──
-    # A pitch with negative IVB but minimal HB is a gyro slider, not a curveball.
-    # Curveballs have BOTH significant depth (IVB ≤ -5) and significant
-    # glove-side break (HB ≤ -5).
+    # ── 3. CURVEBALL: depth 5+ inches AND glove-side break 5+ inches ──
+    # Checked BEFORE Sweeper because a pitch with big sweep AND big depth
+    # is a Curveball, not a Sweeper. Sweepers have minimal depth.
     if ivb <= -5 and hb <= -5:
         return "Curveball"
+
+    # ── 4. SWEEPER: big glove-side sweep WITHOUT significant depth ──
+    # Sweepers sit near IVB = 0 (slight ride or slight drop, but not curveball-deep).
+    # If a pitch has 10+ sweep AND 5+ depth, the Curveball rule above caught it.
+    if fb_hb > 3:
+        # Standard pitcher: FB has arm-side run, sweeper goes glove-side
+        if hb <= -10 and ivb > -5:
+            return "Sweeper"
+    else:
+        # Cutter-primary pitcher: 10+ inches of glove-side sweep, minimal depth
+        if hb <= -10 and ivb > -5:
+            return "Sweeper"
 
     # ── 5. CHANGEUP: 7+ mph slower than FB, arm-side movement matching FB direction ──
     # "Arm-side run similar to primary fastball" — if FB has arm-side HB, CH should too.
@@ -762,7 +760,7 @@ def _prep_df(df):
     return df
 
 @st.cache_data(ttl=3600)
-def load_index(_cache_version="v7"):
+def load_index(_cache_version="v8"):
     """Load lightweight game index — used for sidebar dropdowns. Tiny and fast.
     _cache_version: bump this string to bust the Streamlit Cloud cache."""
     # Support both new index.parquet and legacy pitches.parquet
