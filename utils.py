@@ -435,11 +435,11 @@ def _cluster_pitcher_pitches(pdf, min_cluster_size=5):
 
     try:
         from sklearn.cluster import DBSCAN
-        # Wider eps so natural variance (a few mph velo, a few inches HB) doesn't
-        # split one pitch type into two clusters.
-        eps = 1.3
-        # Looser min_samples for low-volume pitchers, tighter for starters.
-        # But cap min_samples low so a starter's secondary pitches still cluster.
+        # Moderately tight eps so fastball/changeup mixes (similar movement,
+        # 5-10 mph velo gap) get separated into different clusters. The
+        # post-clustering merge logic handles any over-splitting downstream
+        # by collapsing same-labeled clusters and re-labeling slower duplicates.
+        eps = 1.0
         min_samp = max(3, min(5, int(valid.sum() * 0.03)))
         labels = DBSCAN(eps=eps, min_samples=min_samp).fit_predict(Xn)
         pdf.loc[valid, "_cluster"] = labels
@@ -552,6 +552,40 @@ def classify_pitches_for_pitcher(pdf):
         return pdf
 
     clustered, is_lhp = _cluster_pitcher_pitches(pdf)
+
+    # Post-process: if any cluster spans more than 6 mph of velocity, it likely
+    # contains two different pitch types (e.g. fastball + changeup that DBSCAN
+    # merged because they have similar movement). Split such clusters using
+    # KMeans(n=2) on velo so the slower group can be labeled separately.
+    try:
+        from sklearn.cluster import KMeans
+        next_cluster_id = max((c for c in clustered["_cluster"].unique() if c != -1), default=-1) + 1
+        for c in sorted([c for c in clustered["_cluster"].unique() if c != -1]):
+            mask = clustered["_cluster"] == c
+            sub = clustered[mask]
+            velos = sub["RelSpeed"].dropna()
+            if len(velos) < 6:
+                continue
+            velo_range = velos.max() - velos.min()
+            if velo_range > 6:
+                # Split this cluster into 2 sub-clusters by velocity
+                km = KMeans(n_clusters=2, n_init=5, random_state=42).fit(
+                    velos.values.reshape(-1, 1)
+                )
+                sublabels = km.labels_
+                # Map: keep the larger sub-cluster as original c, give the
+                # smaller a new ID
+                counts = pd.Series(sublabels).value_counts()
+                if len(counts) < 2 or counts.min() < 3:
+                    continue  # too unbalanced to split safely
+                bigger = counts.idxmax()
+                indices = sub.dropna(subset=["RelSpeed"]).index.values
+                for idx, lbl in zip(indices, sublabels):
+                    if lbl != bigger:
+                        clustered.at[idx, "_cluster"] = next_cluster_id
+                next_cluster_id += 1
+    except Exception:
+        pass  # KMeans optional; if it fails just use DBSCAN clusters as-is
 
     # Compute cluster centroids (means)
     clusters = sorted(c for c in clustered["_cluster"].unique() if c != -1)
@@ -772,7 +806,7 @@ def _prep_df(df):
     return df
 
 @st.cache_data(ttl=3600)
-def load_index(_cache_version="v9"):
+def load_index(_cache_version="v10"):
     """Load lightweight game index — used for sidebar dropdowns. Tiny and fast.
     _cache_version: bump this string to bust the Streamlit Cloud cache."""
     # Support both new index.parquet and legacy pitches.parquet
