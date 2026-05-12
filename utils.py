@@ -492,8 +492,11 @@ def _label_cluster(cluster_stats, fb_stats, is_primary_fb):
         if abs(hb) >= 10 and (hb < 0 or (hb > 0 and ivb < 0)):
             return "Sweeper"
 
-    # ── 4. CURVEBALL: depth 5+ inches (negative IVB) ──
-    if ivb <= -5:
+    # ── 4. CURVEBALL: depth 5+ inches AND glove-side break 5+ inches ──
+    # A pitch with negative IVB but minimal HB is a gyro slider, not a curveball.
+    # Curveballs have BOTH significant depth (IVB ≤ -5) and significant
+    # glove-side break (HB ≤ -5).
+    if ivb <= -5 and hb <= -5:
         return "Curveball"
 
     # ── 5. CHANGEUP: 7+ mph slower than FB, arm-side movement matching FB direction ──
@@ -513,7 +516,14 @@ def _label_cluster(cluster_stats, fb_stats, is_primary_fb):
     if ivb >= 5 and -5 <= hb <= 5 and velo >= fb_velo - 8:
         return "Cutter"
 
-    # ── 7. SLIDER: glove-side break under 10", IVB > -5 ──
+    # ── 7. SLIDER: minimal-movement breaking ball sitting around (0,0) on
+    # the pitch plot. Includes gyro sliders with slight depth or sweep.
+    # Covers: HB between -10 and 0, IVB between -5 and +5.
+    # Anything with deeper depth OR more sweep falls through to other categories
+    # (Curveball above needs depth+sweep; Sweeper above needs ≥10 sweep).
+    if -10 < hb <= 0 and -5 < ivb < 5:
+        return "Slider"
+    # Also: any glove-side break with no depth is still a slider
     if hb <= -3 and ivb > -5:
         return "Slider"
 
@@ -752,7 +762,7 @@ def _prep_df(df):
     return df
 
 @st.cache_data(ttl=3600)
-def load_index(_cache_version="v6"):
+def load_index(_cache_version="v7"):
     """Load lightweight game index — used for sidebar dropdowns. Tiny and fast.
     _cache_version: bump this string to bust the Streamlit Cloud cache."""
     # Support both new index.parquet and legacy pitches.parquet
@@ -783,7 +793,7 @@ def _to_date(x):
         return x
 
 @st.cache_data(ttl=300)
-def load_team_data(team_name, date_from, date_to, _cache_version="v5"):
+def load_team_data(team_name, date_from, date_to, _cache_version="v6"):
     """
     Load only the date files where the selected team played in the date range.
     Returns ~5-50MB instead of the full 800MB+ season dataset.
