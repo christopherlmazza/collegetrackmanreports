@@ -479,10 +479,11 @@ def _label_cluster(cluster_stats, fb_stats, is_primary_fb):
     if spin < 1500 and velo < fb_velo - 5:
         return "Splitter"
 
-    # ── 3. CURVEBALL: depth 5+ inches AND glove-side break 5+ inches ──
-    # Checked BEFORE Sweeper because a pitch with big sweep AND big depth
-    # is a Curveball, not a Sweeper. Sweepers have minimal depth.
-    if ivb <= -5 and hb <= -5:
+    # ── 3. CURVEBALL: real depth (5+ inches of drop). HB direction matters but
+    # threshold is loose — a curveball needs at least slight glove-side break
+    # (HB ≤ -2) since a deep pitch with arm-side run would be a splitter/sinker
+    # (handled above).
+    if ivb <= -5 and hb <= -2:
         return "Curveball"
 
     # ── 4. SWEEPER: big glove-side sweep WITHOUT significant depth ──
@@ -525,7 +526,18 @@ def _label_cluster(cluster_stats, fb_stats, is_primary_fb):
     if hb <= -3 and ivb > -5:
         return "Slider"
 
-    # ── 8. Catch-all ──
+    # ── 8. Catch-all — make a best-guess based on shape rather than "Other".
+    # By this point the pitch doesn't fit any tight rule but it IS a real pitch.
+    # Use coarse direction + depth to pick the closest pitch type.
+    if ivb <= -3:
+        # Has some drop — call it a Curveball
+        return "Curveball"
+    if hb <= -3:
+        # Glove-side break with no significant depth — Slider
+        return "Slider"
+    if hb >= 8 and velo < fb_velo - 3:
+        # Arm-side run, slower than fastball — Changeup
+        return "ChangeUp"
     return "Other"
 
 def classify_pitches_for_pitcher(pdf):
@@ -760,7 +772,7 @@ def _prep_df(df):
     return df
 
 @st.cache_data(ttl=3600)
-def load_index(_cache_version="v8"):
+def load_index(_cache_version="v9"):
     """Load lightweight game index — used for sidebar dropdowns. Tiny and fast.
     _cache_version: bump this string to bust the Streamlit Cloud cache."""
     # Support both new index.parquet and legacy pitches.parquet
