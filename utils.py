@@ -274,6 +274,53 @@ def load_percentiles():
 
 D1_PCTLS = load_percentiles()
 
+@st.cache_data(ttl=3600)
+def load_heatmap_priors():
+    """Load D1 league-wide heatmap priors (run_value/xwoba/whiff smoothed grids
+    per pitch type × batter side). Built by rebuild_heatmap_priors.py."""
+    try:
+        base = os.path.dirname(os.path.abspath(__file__))
+    except NameError:
+        base = os.getcwd()
+    paths = [
+        os.path.join(base, "d1_heatmap_priors.json"),
+        os.path.join(os.path.expanduser("~"), "Downloads", "d1_heatmap_priors.json"),
+        "d1_heatmap_priors.json",
+    ]
+    for p in paths:
+        if os.path.exists(p):
+            try:
+                with open(p) as f:
+                    raw = json.load(f)
+                # Convert each metric grid (list of lists with None for NaN)
+                # back into a numpy array with NaN, for use at render time.
+                out = {"_meta": raw.get("_meta", {})}
+                for pt, sides in raw.items():
+                    if pt == "_meta":
+                        continue
+                    out[pt] = {}
+                    for side, entry in sides.items():
+                        side_out = {"n": entry.get("n", 0)}
+                        for metric in ("run_value", "xwoba", "whiff"):
+                            grid = entry.get(metric)
+                            if grid is None:
+                                side_out[metric] = None
+                                continue
+                            arr = np.array(
+                                [[np.nan if v is None else v for v in row]
+                                 for row in grid],
+                                dtype=float,
+                            )
+                            side_out[metric] = arr
+                        out[pt][side] = side_out
+                return out
+            except Exception as e:
+                print(f"Failed to load heatmap priors: {e}")
+                return {}
+    return {}
+
+D1_HEATMAP_PRIORS = load_heatmap_priors()
+
 def get_percentile(pitch_type, stat_name, value):
     if not D1_PCTLS: return None
     pt_map = {"FourSeamFastBall": "Fastball", "TwoSeamFastBall": "Sinker", "Changeup": "ChangeUp"}
@@ -435,11 +482,11 @@ def _cluster_pitcher_pitches(pdf, min_cluster_size=5):
 
     try:
         from sklearn.cluster import DBSCAN
-        # Wider eps so natural variance (a few mph velo, a few inches HB) doesn't
-        # split one pitch type into two clusters.
-        eps = 1.3
-        # Looser min_samples for low-volume pitchers, tighter for starters.
-        # But cap min_samples low so a starter's secondary pitches still cluster.
+        # Moderately tight eps so fastball/changeup mixes (similar movement,
+        # 5-10 mph velo gap) get separated into different clusters. The
+        # post-clustering merge logic handles any over-splitting downstream
+        # by collapsing same-labeled clusters and re-labeling slower duplicates.
+        eps = 1.0
         min_samp = max(3, min(5, int(valid.sum() * 0.03)))
         labels = DBSCAN(eps=eps, min_samples=min_samp).fit_predict(Xn)
         pdf.loc[valid, "_cluster"] = labels
@@ -479,10 +526,11 @@ def _label_cluster(cluster_stats, fb_stats, is_primary_fb):
     if spin < 1500 and velo < fb_velo - 5:
         return "Splitter"
 
-    # ── 3. CURVEBALL: depth 5+ inches AND glove-side break 5+ inches ──
-    # Checked BEFORE Sweeper because a pitch with big sweep AND big depth
-    # is a Curveball, not a Sweeper. Sweepers have minimal depth.
-    if ivb <= -5 and hb <= -5:
+    # ── 3. CURVEBALL: real depth (5+ inches of drop). HB direction matters but
+    # threshold is loose — a curveball needs at least slight glove-side break
+    # (HB ≤ -2) since a deep pitch with arm-side run would be a splitter/sinker
+    # (handled above).
+    if ivb <= -5 and hb <= -2:
         return "Curveball"
 
     # ── 4. SWEEPER: big glove-side sweep WITHOUT significant depth ──
@@ -525,7 +573,18 @@ def _label_cluster(cluster_stats, fb_stats, is_primary_fb):
     if hb <= -3 and ivb > -5:
         return "Slider"
 
-    # ── 8. Catch-all ──
+    # ── 8. Catch-all — make a best-guess based on shape rather than "Other".
+    # By this point the pitch doesn't fit any tight rule but it IS a real pitch.
+    # Use coarse direction + depth to pick the closest pitch type.
+    if ivb <= -3:
+        # Has some drop — call it a Curveball
+        return "Curveball"
+    if hb <= -3:
+        # Glove-side break with no significant depth — Slider
+        return "Slider"
+    if hb >= 8 and velo < fb_velo - 3:
+        # Arm-side run, slower than fastball — Changeup
+        return "ChangeUp"
     return "Other"
 
 def classify_pitches_for_pitcher(pdf):
@@ -540,6 +599,40 @@ def classify_pitches_for_pitcher(pdf):
         return pdf
 
     clustered, is_lhp = _cluster_pitcher_pitches(pdf)
+
+    # Post-process: if any cluster spans more than 6 mph of velocity, it likely
+    # contains two different pitch types (e.g. fastball + changeup that DBSCAN
+    # merged because they have similar movement). Split such clusters using
+    # KMeans(n=2) on velo so the slower group can be labeled separately.
+    try:
+        from sklearn.cluster import KMeans
+        next_cluster_id = max((c for c in clustered["_cluster"].unique() if c != -1), default=-1) + 1
+        for c in sorted([c for c in clustered["_cluster"].unique() if c != -1]):
+            mask = clustered["_cluster"] == c
+            sub = clustered[mask]
+            velos = sub["RelSpeed"].dropna()
+            if len(velos) < 6:
+                continue
+            velo_range = velos.max() - velos.min()
+            if velo_range > 6:
+                # Split this cluster into 2 sub-clusters by velocity
+                km = KMeans(n_clusters=2, n_init=5, random_state=42).fit(
+                    velos.values.reshape(-1, 1)
+                )
+                sublabels = km.labels_
+                # Map: keep the larger sub-cluster as original c, give the
+                # smaller a new ID
+                counts = pd.Series(sublabels).value_counts()
+                if len(counts) < 2 or counts.min() < 3:
+                    continue  # too unbalanced to split safely
+                bigger = counts.idxmax()
+                indices = sub.dropna(subset=["RelSpeed"]).index.values
+                for idx, lbl in zip(indices, sublabels):
+                    if lbl != bigger:
+                        clustered.at[idx, "_cluster"] = next_cluster_id
+                next_cluster_id += 1
+    except Exception:
+        pass  # KMeans optional; if it fails just use DBSCAN clusters as-is
 
     # Compute cluster centroids (means)
     clusters = sorted(c for c in clustered["_cluster"].unique() if c != -1)
@@ -760,7 +853,7 @@ def _prep_df(df):
     return df
 
 @st.cache_data(ttl=3600)
-def load_index(_cache_version="v8"):
+def load_index(_cache_version="v10"):
     """Load lightweight game index — used for sidebar dropdowns. Tiny and fast.
     _cache_version: bump this string to bust the Streamlit Cloud cache."""
     # Support both new index.parquet and legacy pitches.parquet
@@ -1495,6 +1588,38 @@ def compute_pitch_run_value(row):
         return 0.0
     return 0.0
 
+HEATMAP_GRID_NX = 80
+HEATMAP_GRID_NY = 80
+HEATMAP_X_RANGE = (-2.5, 2.5)
+HEATMAP_Y_RANGE = (-0.5, 5.0)
+HEATMAP_KDE_BW = 0.4
+HEATMAP_SPATIAL_SIGMA = 0.3
+# Effective sample size for the empirical-Bayes prior. Cells with this many
+# pitches contribute equally with the prior; cells with fewer pitches get
+# pulled toward the prior. Higher = more aggressive shrinkage.
+HEATMAP_PRIOR_K = 25.0
+# Map our internal metric name to the key used in d1_heatmap_priors.json
+_METRIC_TO_PRIOR_KEY = {
+    "run_value": "run_value",
+    "whiff":     "whiff",
+    "xwoba":     "xwoba",
+}
+
+def _prior_grid_for(pitch_type, side, metric):
+    """Return the (80,80) numpy prior grid for this metric, or None if missing."""
+    if not D1_HEATMAP_PRIORS:
+        return None
+    key = _METRIC_TO_PRIOR_KEY.get(metric)
+    if key is None:
+        return None
+    pt_block = D1_HEATMAP_PRIORS.get(pitch_type)
+    if not pt_block:
+        return None
+    side_block = pt_block.get(side)
+    if not side_block:
+        return None
+    return side_block.get(key)
+
 def generate_heatmap(p, pitch_type, metric="run_value"):
     sub = p[p["PitchType"] == pitch_type].copy()
     sub = sub[sub["PlateLocSide"].notna() & sub["PlateLocHeight"].notna()]
@@ -1538,6 +1663,15 @@ def generate_heatmap(p, pitch_type, metric="run_value"):
 
     fig, axes = plt.subplots(1, 2, figsize=(16, 8), facecolor=BG_COLOR)
 
+    # Build the grid once
+    xi = np.linspace(*HEATMAP_X_RANGE, HEATMAP_GRID_NX)
+    yi = np.linspace(*HEATMAP_Y_RANGE, HEATMAP_GRID_NY)
+    Xi, Yi = np.meshgrid(xi, yi)
+    sigma2 = 2 * HEATMAP_SPATIAL_SIGMA ** 2
+
+    # Detect whether we'll apply EB shrinkage on this metric (not for density)
+    use_eb = (not is_density_only)
+
     for idx, (side, label) in enumerate([("Left", "vs LHB"), ("Right", "vs RHB")]):
         ax = axes[idx]
         ax.set_facecolor(PANEL_COLOR)
@@ -1547,43 +1681,73 @@ def generate_heatmap(p, pitch_type, metric="run_value"):
         ax.add_patch(Polygon([(-.708, .55), (.708, .55), (.708, .35), (0, .15), (-.708, .35)],
                              closed=True, fc="#CCCCCC", ec="black", lw=.5, alpha=0.5, zorder=10))
 
+        # Pull the D1 prior grid for this (pitch type, batter side, metric)
+        prior_grid = _prior_grid_for(pitch_type, side, metric) if use_eb else None
+
         if len(side_data) >= 5:
             x = -side_data["PlateLocSide"].values  # mirror to catcher POV
             y = side_data["PlateLocHeight"].values
-            xi = np.linspace(-2.5, 2.5, 80)
-            yi = np.linspace(-0.5, 5.0, 80)
-            Xi, Yi = np.meshgrid(xi, yi)
             try:
                 positions = np.vstack([x, y])
-                kde = gaussian_kde(positions, bw_method=0.4)
+                kde = gaussian_kde(positions, bw_method=HEATMAP_KDE_BW)
                 density = kde(np.vstack([Xi.ravel(), Yi.ravel()])).reshape(Xi.shape)
+
                 if is_density_only:
                     Zi = density / density.max() if density.max() > 0 else density
-                    density_thresh = 0.05
-                    Zi[Zi < density_thresh] = np.nan
+                    Zi[Zi < 0.05] = np.nan
                 else:
                     vals = side_data["_val"].values
-                    Zi = np.zeros_like(Xi)
+                    # Gaussian-weighted local mean (same as before)
+                    Zi_local = np.zeros_like(Xi)
+                    W = np.zeros_like(Xi)
                     for px, py, pv in zip(x, y, vals):
+                        if not np.isfinite(pv):
+                            continue
                         dist2 = (Xi - px) ** 2 + (Yi - py) ** 2
-                        weights = np.exp(-dist2 / (2 * 0.3 ** 2))
-                        Zi += weights * pv
-                    weight_sum = np.zeros_like(Xi)
-                    for px, py in zip(x, y):
-                        dist2 = (Xi - px) ** 2 + (Yi - py) ** 2
-                        weight_sum += np.exp(-dist2 / (2 * 0.3 ** 2))
-                    weight_sum[weight_sum == 0] = 1
-                    Zi = Zi / weight_sum
+                        w = np.exp(-dist2 / sigma2)
+                        Zi_local += w * pv
+                        W += w
+                    # n_local = "effective sample size" at each cell. Use the
+                    # weight sum directly — it's the sum of Gaussian weights,
+                    # which approximates how many pitches contribute.
+                    n_local = W.copy()
+                    safe_W = np.where(W == 0, 1, W)
+                    local_mean = Zi_local / safe_W
+
+                    if prior_grid is not None:
+                        # ── Empirical Bayes shrinkage ──
+                        # shrunk = (n * local + k * prior) / (n + k)
+                        # Where prior is NaN (sparse league cells), fall back
+                        # to the local mean.
+                        prior = prior_grid
+                        valid_prior = np.isfinite(prior)
+                        # Default: just local mean
+                        Zi = local_mean.copy()
+                        # Apply shrinkage only where prior is valid
+                        denom = n_local + HEATMAP_PRIOR_K
+                        shrunk = (n_local * local_mean +
+                                  HEATMAP_PRIOR_K * np.where(valid_prior, prior, 0)) / denom
+                        Zi = np.where(valid_prior, shrunk, local_mean)
+                    else:
+                        # No prior available — fall back to old behavior
+                        Zi = local_mean
+
+                    # Mask very-low-density cells so we don't show garbage
                     density_thresh = density.max() * 0.05
                     Zi[density < density_thresh] = np.nan
+
                 im = ax.pcolormesh(Xi, Yi, Zi, cmap=cmap_name, vmin=vmin, vmax=vmax,
                                    shading="gouraud", zorder=1)
-            except:
+            except Exception:
                 pass
             ax.scatter(x, y, c="black", s=8, alpha=0.5, zorder=6)
 
         n_side = len(side_data)
-        ax.set_title(f"{pitch_type} {label} ({n_side})", fontsize=14, fontweight="bold", color=TEXT_COLOR, pad=8)
+        prior_note = ""
+        if use_eb and prior_grid is not None:
+            prior_note = "  ·  EB shrunk"
+        ax.set_title(f"{pitch_type} {label} ({n_side}){prior_note}",
+                     fontsize=14, fontweight="bold", color=TEXT_COLOR, pad=8)
         ax.set_xlim(-2.5, 2.5); ax.set_ylim(-0.5, 5.0)
         ax.set_xlabel("Plate Side (ft)", fontsize=12, color=MUTED_TEXT)
         if idx == 0:
