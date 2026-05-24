@@ -1,0 +1,799 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pitching Battleship</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Bricolage+Grotesque:wght@400;600;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0e1116;
+    --surface: #161b22;
+    --surface-2: #1f2630;
+    --line: #2a3340;
+    --text: #e6edf3;
+    --text-dim: #8b97a8;
+    --accent: #5fb3ff;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; background: var(--bg); color: var(--text); font-family: 'Bricolage Grotesque', sans-serif; }
+  body { padding: 24px; }
+  .wrap { max-width: 1500px; margin: 0 auto; }
+  header { display: flex; align-items: baseline; gap: 16px; margin-bottom: 4px; flex-wrap: wrap; }
+  h1 { font-size: 28px; font-weight: 800; letter-spacing: -0.02em; }
+  h1 .accent { color: var(--accent); }
+  .sub { color: var(--text-dim); font-size: 13px; font-family: 'JetBrains Mono', monospace; }
+
+  .loader-bar {
+    margin: 20px 0 24px; padding: 14px 16px;
+    background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  .loader-row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  .loader-row label { font-size: 13px; color: var(--text-dim); font-family: 'JetBrains Mono', monospace; }
+  .loader-row input[type="date"] {
+    background: var(--surface-2); border: 1px solid var(--line); color: var(--text);
+    padding: 6px 10px; border-radius: 6px; font-family: 'JetBrains Mono', monospace; font-size: 12px;
+    color-scheme: dark;
+  }
+  .loader-row button {
+    background: var(--accent); border: none; color: var(--bg); padding: 7px 16px; border-radius: 6px;
+    font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 700; cursor: pointer;
+  }
+  .loader-row button:hover { filter: brightness(1.1); }
+  .loader-row button.secondary { background: var(--surface-2); color: var(--text); border: 1px solid var(--line); font-weight: 500; }
+  .status { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--text-dim); }
+  .status.ok { color: #4ade80; }
+  .status.err { color: #f87171; }
+  .status.warn { color: #fbbf24; }
+
+  .progress { height: 4px; background: var(--surface-2); border-radius: 2px; overflow: hidden; }
+  .progress-bar { height: 100%; background: var(--accent); transition: width 0.2s; }
+  .progress.hidden { display: none; }
+
+  .grid { display: grid; grid-template-columns: 1fr 1.2fr; gap: 20px; }
+  @media (max-width: 1100px) { .grid { grid-template-columns: 1fr; } }
+  .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 18px; }
+  .panel-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 12px; }
+  .panel h2 { font-size: 15px; font-weight: 700; letter-spacing: 0.02em; text-transform: uppercase; color: var(--text-dim); }
+
+  .controls { display: flex; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+  .controls input[type="text"] {
+    flex: 1; min-width: 180px; background: var(--surface-2); border: 1px solid var(--line);
+    color: var(--text); padding: 8px 12px; border-radius: 8px; font-family: 'JetBrains Mono', monospace; font-size: 12px;
+  }
+  .controls input[type="text"]:focus { outline: none; border-color: var(--accent); }
+  .controls button {
+    background: var(--surface-2); border: 1px solid var(--line); color: var(--text);
+    padding: 8px 12px; border-radius: 8px; font-family: 'JetBrains Mono', monospace; font-size: 12px;
+    cursor: pointer; transition: all 0.15s;
+  }
+  .controls button:hover { background: var(--line); }
+  .controls button.active { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+
+  .table-scroll { max-height: 620px; overflow-y: auto; border: 1px solid var(--line); border-radius: 8px; }
+  table { width: 100%; border-collapse: collapse; font-family: 'JetBrains Mono', monospace; font-size: 12px; }
+  thead { position: sticky; top: 0; background: var(--surface-2); z-index: 2; }
+  th { padding: 10px 8px; text-align: left; font-weight: 600; color: var(--text-dim); border-bottom: 1px solid var(--line);
+       text-transform: uppercase; font-size: 10px; letter-spacing: 0.05em; cursor: pointer; user-select: none; }
+  th:hover { color: var(--text); }
+  th .arrow { opacity: 0.4; margin-left: 2px; }
+  th.sorted .arrow { opacity: 1; color: var(--accent); }
+  td { padding: 8px; border-bottom: 1px solid rgba(42,51,64,0.5); }
+  tr.row { cursor: pointer; transition: background 0.1s; }
+  tr.row:hover { background: var(--surface-2); }
+  tr.row.selected { background: rgba(95,179,255,0.15); }
+  .name { font-weight: 600; }
+  .throws { font-size: 10px; padding: 2px 6px; border-radius: 4px; background: var(--surface-2); margin-left: 6px; opacity: 0.8; }
+  .num { text-align: right; color: var(--text-dim); }
+
+  .chart-wrap { position: relative; }
+  svg { width: 100%; height: auto; display: block; }
+  .legend { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; font-size: 11px; font-family: 'JetBrains Mono', monospace; }
+  .legend-item { display: flex; align-items: center; gap: 6px; color: var(--text-dim); cursor: pointer; user-select: none;
+                 padding: 4px 10px; border-radius: 6px; background: var(--surface-2); border: 1px solid var(--line); transition: all 0.15s; }
+  .legend-item:hover { color: var(--text); }
+  .legend-item.off { opacity: 0.35; }
+  .swatch { width: 12px; height: 12px; border-radius: 3px; }
+
+  .empty { padding: 40px 20px; text-align: center; color: var(--text-dim); font-family: 'JetBrains Mono', monospace; font-size: 12px; }
+
+  .detail { margin-top: 16px; padding: 14px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px;
+            font-family: 'JetBrains Mono', monospace; font-size: 12px; }
+  .detail-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+  .detail-head .name { font-size: 14px; color: var(--text); }
+  .detail-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+  .detail-cell { padding: 8px 10px; background: var(--surface); border-radius: 6px; border-left: 3px solid; }
+  .detail-cell .pt { font-size: 10px; opacity: 0.9; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 700; }
+  .detail-cell .v { font-size: 11px; color: var(--text); margin-top: 3px; }
+  .detail-cell .meta { font-size: 10px; color: var(--text-dim); margin-top: 1px; }
+  .delta-pos { color: #4ade80; }
+  .delta-neg { color: #f87171; }
+
+  .tooltip {
+    position: absolute; pointer-events: none; background: rgba(14,17,22,0.97);
+    border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px;
+    font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--text);
+    transform: translate(-50%, -110%); white-space: nowrap; opacity: 0; transition: opacity 0.1s; z-index: 10;
+  }
+
+  .chart-toggles { display: flex; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+  .toggle { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--text-dim);
+            padding: 5px 11px; background: var(--surface-2); border: 1px solid var(--line);
+            border-radius: 6px; cursor: pointer; user-select: none; transition: all 0.15s; }
+  .toggle.on { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+
+  .setup-msg { background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
+               padding: 24px; margin: 20px 0; font-family: 'JetBrains Mono', monospace; font-size: 13px; line-height: 1.7; }
+  .setup-msg h3 { font-family: 'Bricolage Grotesque'; font-size: 18px; margin-bottom: 12px; color: var(--accent); }
+  .setup-msg code { background: var(--surface-2); padding: 2px 6px; border-radius: 4px; color: var(--text); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>Pitching <span class="accent">Battleship</span></h1>
+    <span class="sub">VAA × HAA · MLB 2026 reference vs your TrackMan data</span>
+  </header>
+
+  <div class="loader-bar">
+    <div class="loader-row">
+      <label>Date range:</label>
+      <input type="date" id="startDate" value="2026-02-13">
+      <label>to</label>
+      <input type="date" id="endDate">
+      <button id="loadBtn">Load files</button>
+      <button id="dropZoneBtn" class="secondary">Or drag-drop files</button>
+      <span id="status" class="status">Set a date range and click "Load files"</span>
+    </div>
+    <div class="progress hidden" id="progress"><div class="progress-bar" id="progressBar" style="width:0%"></div></div>
+  </div>
+
+  <div id="setupMsg" class="setup-msg" style="display:none;">
+    <h3>One-time setup</h3>
+    The browser can't read files from disk directly. To load your parquet files, you need a tiny local server. <strong>30 seconds:</strong>
+    <ol style="margin: 12px 0 12px 20px;">
+      <li>Open PowerShell or Command Prompt</li>
+      <li>Run: <code>cd "C:\Users\chris\OneDrive\Documents\trackmanpitchingreports\data\by_date"</code></li>
+      <li>Run: <code>python -m http.server 8000</code></li>
+      <li>Open: <code>http://localhost:8000/battleship_app.html</code> in your browser</li>
+    </ol>
+    Or, just drag and drop all the parquet files onto this page.
+  </div>
+
+  <div class="grid">
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Pitchers</h2>
+        <span class="sub" id="pitcherCount"></span>
+      </div>
+      <div class="controls">
+        <input type="text" id="search" placeholder="Search pitcher...">
+        <button id="filterAll" class="active">All</button>
+        <button id="filterR">RHP</button>
+        <button id="filterL">LHP</button>
+      </div>
+      <div class="table-scroll">
+        <table id="ptable">
+          <thead>
+            <tr>
+              <th data-sort="name">Pitcher <span class="arrow">↕</span></th>
+              <th data-sort="throws" class="num">Hand <span class="arrow">↕</span></th>
+              <th data-sort="total" class="num">Pitches <span class="arrow">↕</span></th>
+              <th data-sort="types" class="num">Types <span class="arrow">↕</span></th>
+              <th data-sort="velo" class="num">Avg FF <span class="arrow">↕</span></th>
+            </tr>
+          </thead>
+          <tbody id="tbody">
+            <tr><td colspan="5" class="empty">Load files to see pitchers.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div id="detail"></div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Battleship Chart</h2>
+        <span class="sub" id="chartCaption">MLB ellipses · select a pitcher to overlay</span>
+      </div>
+      <div class="chart-toggles">
+        <span class="toggle on" id="togEllipses">MLB ellipses</span>
+        <span class="toggle on" id="togDots">Pitch averages</span>
+        <span class="toggle" id="togIndiv">Every pitch</span>
+        <span class="toggle on" id="togLabels">Labels</span>
+      </div>
+      <div class="chart-wrap">
+        <svg id="chart" viewBox="0 0 700 560" preserveAspectRatio="xMidYMid meet"></svg>
+        <div class="tooltip" id="tip"></div>
+      </div>
+      <div class="legend" id="legend"></div>
+    </div>
+  </div>
+</div>
+
+<script type="module">
+import { parquetReadObjects } from 'https://cdn.jsdelivr.net/npm/hyparquet@1.10.0/+esm';
+
+// ============================================================================
+// MLB reference (from your 2026 Statcast pull)
+// ============================================================================
+const MLB = {
+  n_std: 1.0,
+  pitch_types: {
+    FF: { label: "4-Seam",    color: "#E63946", haa_mean: 1.238,  vaa_mean: -4.656, cov: [[1.179,-0.119],[-0.119,0.950]] },
+    SI: { label: "Sinker",    color: "#F18A3F", haa_mean: 0.385,  vaa_mean: -5.827, cov: [[1.215,-0.112],[-0.112,0.898]] },
+    FC: { label: "Cutter",    color: "#9B5DE5", haa_mean: 2.573,  vaa_mean: -6.038, cov: [[1.250,-0.282],[-0.282,1.346]] },
+    SL: { label: "Slider",    color: "#2A9DF4", haa_mean: 2.713,  vaa_mean: -7.729, cov: [[1.376,-0.247],[-0.247,1.484]] },
+    ST: { label: "Sweeper",   color: "#00BBF9", haa_mean: 4.006,  vaa_mean: -7.620, cov: [[1.200,-0.241],[-0.241,1.383]] },
+    CU: { label: "Curveball", color: "#3CB371", haa_mean: 2.816,  vaa_mean: -9.524, cov: [[1.593,-0.126],[-0.126,1.509]] },
+    CH: { label: "Changeup",  color: "#F4D35E", haa_mean: 0.316,  vaa_mean: -7.463, cov: [[1.377,-0.272],[-0.272,1.235]] },
+    FS: { label: "Splitter",  color: "#B08968", haa_mean: 0.577,  vaa_mean: -7.718, cov: [[1.186,-0.262],[-0.262,1.410]] },
+  }
+};
+const PITCH_ORDER = ["FF","SI","FC","SL","ST","CU","CH","FS"];
+
+// Map TrackMan pitch labels → Statcast codes (prefer Tagged, fall back to Auto)
+const PITCH_MAP = {
+  "Four-Seam": "FF", "FourSeamFastBall": "FF", "Fastball": "FF", "4-Seam": "FF",
+  "Sinker": "SI", "TwoSeamFastBall": "SI", "Two-Seam": "SI",
+  "Cutter": "FC",
+  "Slider": "SL",
+  "Sweeper": "ST",
+  "Curveball": "CU", "Knuckle Curve": "CU",
+  "Changeup": "CH", "ChangeUp": "CH",
+  "Splitter": "FS", "Split-Finger": "FS",
+};
+
+// ============================================================================
+// State
+// ============================================================================
+let TRACKMAN = null;  // { pitchers: { name: {throws, total_pitches, pitch_types: {...}} } }
+let selectedPitcher = null;
+let visiblePitches = new Set(PITCH_ORDER);
+let handFilter = "ALL";
+let searchQuery = "";
+let sortKey = "total";
+let sortDir = -1;
+let showEllipses = true, showDots = true, showIndiv = false, showLabels = true;
+
+// Set default end date to today
+document.getElementById('endDate').valueAsDate = new Date();
+
+// ============================================================================
+// File loading
+// ============================================================================
+function setStatus(msg, cls='') {
+  const s = document.getElementById('status');
+  s.textContent = msg;
+  s.className = 'status ' + cls;
+}
+
+function showProgress(pct) {
+  const p = document.getElementById('progress');
+  p.classList.remove('hidden');
+  document.getElementById('progressBar').style.width = pct + '%';
+  if (pct >= 100) setTimeout(() => p.classList.add('hidden'), 600);
+}
+
+function* dateRange(start, end) {
+  const d = new Date(start);
+  const stop = new Date(end);
+  while (d <= stop) {
+    yield d.toISOString().slice(0,10);
+    d.setDate(d.getDate() + 1);
+  }
+}
+
+async function loadFromServer() {
+  const start = document.getElementById('startDate').value;
+  const end   = document.getElementById('endDate').value;
+  if (!start || !end) { setStatus('Pick a date range first', 'err'); return; }
+
+  const dates = [...dateRange(start, end)];
+  setStatus(`Trying ${dates.length} dates...`);
+  showProgress(0);
+
+  const allRows = [];
+  let found = 0, missing = 0, errored = 0;
+
+  for (let i = 0; i < dates.length; i++) {
+    const date = dates[i];
+    try {
+      const resp = await fetch(`${date}.parquet`);
+      if (!resp.ok) { missing++; continue; }
+      const buf = await resp.arrayBuffer();
+      const rows = await parquetReadObjects({ file: buf });
+      allRows.push(...rows);
+      found++;
+      setStatus(`Loaded ${date} (${rows.length} pitches) — ${found} files, ${allRows.length} pitches total`);
+    } catch (err) {
+      console.error(`Error on ${date}:`, err);
+      errored++;
+    }
+    showProgress(Math.round((i+1)/dates.length * 100));
+  }
+
+  if (found === 0) {
+    setStatus(`No files loaded. Are you running this through a local server? See setup instructions below.`, 'err');
+    document.getElementById('setupMsg').style.display = 'block';
+    return;
+  }
+
+  setStatus(`Done. ${found} files, ${allRows.length} pitches loaded${errored > 0 ? ` (${errored} errored)` : ''}.`, 'ok');
+  processRows(allRows);
+}
+
+async function loadFromFiles(fileList) {
+  const files = [...fileList].filter(f => f.name.endsWith('.parquet'));
+  if (!files.length) { setStatus('No .parquet files found in drop', 'err'); return; }
+
+  setStatus(`Reading ${files.length} files...`);
+  showProgress(0);
+
+  const allRows = [];
+  for (let i = 0; i < files.length; i++) {
+    try {
+      const buf = await files[i].arrayBuffer();
+      const rows = await parquetReadObjects({ file: buf });
+      allRows.push(...rows);
+      setStatus(`Loaded ${files[i].name} (${rows.length} pitches) — ${i+1}/${files.length}`);
+    } catch (err) {
+      console.error(`Error on ${files[i].name}:`, err);
+    }
+    showProgress(Math.round((i+1)/files.length * 100));
+  }
+
+  setStatus(`Done. ${files.length} files, ${allRows.length} pitches loaded.`, 'ok');
+  processRows(allRows);
+}
+
+document.getElementById('loadBtn').addEventListener('click', loadFromServer);
+
+// Drag-and-drop
+['dragover','dragenter'].forEach(ev => {
+  document.body.addEventListener(ev, e => { e.preventDefault(); document.body.style.background = '#1a2030'; });
+});
+['dragleave','drop'].forEach(ev => {
+  document.body.addEventListener(ev, e => { e.preventDefault(); document.body.style.background = ''; });
+});
+document.body.addEventListener('drop', e => {
+  e.preventDefault();
+  if (e.dataTransfer.files.length) loadFromFiles(e.dataTransfer.files);
+});
+
+// "Or drag-drop" button = open file picker
+document.getElementById('dropZoneBtn').addEventListener('click', () => {
+  const inp = document.createElement('input');
+  inp.type = 'file'; inp.multiple = true; inp.accept = '.parquet';
+  inp.addEventListener('change', () => loadFromFiles(inp.files));
+  inp.click();
+});
+
+// ============================================================================
+// Processing rows → aggregated structure
+// ============================================================================
+function classifyPitch(row) {
+  const tagged = String(row.TaggedPitchType || '').trim();
+  const auto   = String(row.AutoPitchType || '').trim();
+  if (tagged && tagged !== 'Undefined' && tagged !== 'Other' && PITCH_MAP[tagged]) return PITCH_MAP[tagged];
+  if (auto && auto !== 'Undefined' && auto !== 'Other' && PITCH_MAP[auto]) return PITCH_MAP[auto];
+  return null;
+}
+
+function computeHAA(relSide, plateLocSide, extension, throws) {
+  // Straight-line approximation of HAA from release to plate.
+  // Then flip sign for lefties so + = arm side, − = glove side.
+  const horizDist = 60.5 - extension - 17/12;
+  const dx = plateLocSide - relSide;
+  const raw = Math.atan(dx / horizDist) * 180 / Math.PI;
+  return throws === 'L' ? -raw : raw;
+}
+
+function processRows(rows) {
+  // 1) Infer handedness per pitcher from average RelSide
+  //    TrackMan convention: RelSide < 0 → RHP, > 0 → LHP
+  const relSideSum = new Map(), relSideCount = new Map();
+  for (const r of rows) {
+    if (r.Pitcher == null || r.RelSide == null) continue;
+    relSideSum.set(r.Pitcher, (relSideSum.get(r.Pitcher) || 0) + Number(r.RelSide));
+    relSideCount.set(r.Pitcher, (relSideCount.get(r.Pitcher) || 0) + 1);
+  }
+  const throwsByPitcher = new Map();
+  for (const [name, sum] of relSideSum) {
+    const cnt = relSideCount.get(name);
+    const mean = sum / cnt;
+    throwsByPitcher.set(name, mean > 0 ? 'L' : 'R');
+  }
+
+  // 2) Build per-pitcher × pitch-type aggregates
+  const pitchersTmp = new Map();
+  for (const r of rows) {
+    if (r.Pitcher == null) continue;
+    if (r.RelSide == null || r.PlateLocSide == null || r.Extension == null || r.VertApprAngle == null) continue;
+    const code = classifyPitch(r);
+    if (!code) continue;
+
+    const throws = throwsByPitcher.get(r.Pitcher) || 'R';
+    const haa = computeHAA(Number(r.RelSide), Number(r.PlateLocSide), Number(r.Extension), throws);
+    const vaa = Number(r.VertApprAngle);
+    if (!isFinite(haa) || !isFinite(vaa)) continue;
+    if (vaa > 0 || vaa < -15) continue;
+    if (haa > 8 || haa < -8) continue;
+
+    if (!pitchersTmp.has(r.Pitcher)) pitchersTmp.set(r.Pitcher, { throws, total: 0, byType: new Map() });
+    const p = pitchersTmp.get(r.Pitcher);
+    p.total += 1;
+    if (!p.byType.has(code)) p.byType.set(code, []);
+    p.byType.get(code).push({
+      haa, vaa,
+      velo: r.RelSpeed != null ? Number(r.RelSpeed) : null
+    });
+  }
+
+  // 3) Filter (min 5 pitches per pitcher, min 3 per pitch type) and compute means
+  const out = {};
+  const MIN_PITCHER = 5, MIN_TYPE = 3;
+  for (const [name, p] of pitchersTmp) {
+    if (p.total < MIN_PITCHER) continue;
+    const pitch_types = {};
+    for (const [code, arr] of p.byType) {
+      if (arr.length < MIN_TYPE) continue;
+      const n = arr.length;
+      const haa_mean = arr.reduce((s,x) => s+x.haa, 0) / n;
+      const vaa_mean = arr.reduce((s,x) => s+x.vaa, 0) / n;
+      const velos = arr.filter(x => x.velo != null).map(x => x.velo);
+      const velo_mean = velos.length ? velos.reduce((s,x) => s+x, 0) / velos.length : null;
+      pitch_types[code] = {
+        n,
+        haa_mean, vaa_mean, velo_mean,
+        pitches: arr,
+      };
+    }
+    if (Object.keys(pitch_types).length === 0) continue;
+    out[name] = { throws: p.throws, total_pitches: p.total, pitch_types };
+  }
+
+  TRACKMAN = { pitchers: out };
+  selectedPitcher = null;
+  renderTable();
+  render();
+}
+
+// ============================================================================
+// Table
+// ============================================================================
+function pitcherRow(name, p) {
+  const types = Object.keys(p.pitch_types);
+  const ff = p.pitch_types.FF;
+  return {
+    name, throws: p.throws,
+    total: p.total_pitches,
+    typesCount: types.length,
+    ffVelo: ff ? ff.velo_mean : null,
+  };
+}
+
+function renderTable() {
+  const tb = document.getElementById('tbody');
+  if (!TRACKMAN) {
+    tb.innerHTML = `<tr><td colspan="5" class="empty">Load files to see pitchers.</td></tr>`;
+    document.getElementById('pitcherCount').textContent = '';
+    return;
+  }
+  let rows = Object.entries(TRACKMAN.pitchers).map(([n,p]) => pitcherRow(n,p));
+  if (handFilter !== 'ALL') rows = rows.filter(r => r.throws === handFilter);
+  if (searchQuery) {
+    const q = searchQuery.toLowerCase();
+    rows = rows.filter(r => r.name.toLowerCase().includes(q));
+  }
+  rows.sort((a,b) => {
+    let av, bv;
+    switch (sortKey) {
+      case 'name':   av = a.name; bv = b.name; break;
+      case 'throws': av = a.throws; bv = b.throws; break;
+      case 'total':  av = a.total; bv = b.total; break;
+      case 'types':  av = a.typesCount; bv = b.typesCount; break;
+      case 'velo':   av = a.ffVelo ?? -Infinity; bv = b.ffVelo ?? -Infinity; break;
+    }
+    if (av < bv) return -1 * sortDir;
+    if (av > bv) return  1 * sortDir;
+    return 0;
+  });
+
+  tb.innerHTML = rows.map(r => `
+    <tr class="row ${r.name === selectedPitcher ? 'selected' : ''}" data-name="${escapeHtml(r.name)}">
+      <td><span class="name">${escapeHtml(r.name)}</span></td>
+      <td class="num">${r.throws}HP</td>
+      <td class="num">${r.total}</td>
+      <td class="num">${r.typesCount}</td>
+      <td class="num">${r.ffVelo ? r.ffVelo.toFixed(1) : '—'}</td>
+    </tr>
+  `).join('') || `<tr><td colspan="5" class="empty">No pitchers match.</td></tr>`;
+
+  document.getElementById('pitcherCount').textContent = `${rows.length} shown · ${Object.keys(TRACKMAN.pitchers).length} total`;
+
+  document.querySelectorAll('th[data-sort]').forEach(th => {
+    th.classList.toggle('sorted', th.dataset.sort === sortKey);
+    const arrow = th.querySelector('.arrow');
+    if (arrow) arrow.textContent = th.dataset.sort === sortKey ? (sortDir > 0 ? '↑' : '↓') : '↕';
+  });
+
+  tb.querySelectorAll('tr.row').forEach(tr => {
+    tr.addEventListener('click', () => {
+      selectedPitcher = (selectedPitcher === tr.dataset.name) ? null : tr.dataset.name;
+      renderTable();
+      render();
+    });
+  });
+}
+
+document.getElementById('search').addEventListener('input', e => {
+  searchQuery = e.target.value; renderTable();
+});
+document.querySelectorAll('th[data-sort]').forEach(th => {
+  th.addEventListener('click', () => {
+    if (sortKey === th.dataset.sort) sortDir *= -1;
+    else { sortKey = th.dataset.sort; sortDir = (sortKey === 'name' || sortKey === 'throws') ? 1 : -1; }
+    renderTable();
+  });
+});
+['filterAll','filterR','filterL'].forEach((id,i) => {
+  document.getElementById(id).addEventListener('click', () => {
+    handFilter = ['ALL','R','L'][i];
+    document.querySelectorAll('.controls button').forEach(b => b.classList.remove('active'));
+    document.getElementById(id).classList.add('active');
+    renderTable();
+  });
+});
+
+[['togEllipses','showEllipses'],['togDots','showDots'],['togIndiv','showIndiv'],['togLabels','showLabels']]
+  .forEach(([id,key]) => {
+    document.getElementById(id).addEventListener('click', (e) => {
+      switch(key){
+        case 'showEllipses': showEllipses = !showEllipses; break;
+        case 'showDots':     showDots     = !showDots; break;
+        case 'showIndiv':    showIndiv    = !showIndiv; break;
+        case 'showLabels':   showLabels   = !showLabels; break;
+      }
+      e.target.classList.toggle('on');
+      render();
+    });
+  });
+
+// ============================================================================
+// Chart
+// ============================================================================
+const X_MIN = -2, X_MAX = 6;
+const Y_MIN = -11, Y_MAX = -3;
+const PAD = { l: 60, r: 30, t: 30, b: 60 };
+const W = 700, H = 560;
+const PLOT_W = W - PAD.l - PAD.r;
+const PLOT_H = H - PAD.t - PAD.b;
+
+function xScale(haa) { return PAD.l + ((haa - X_MIN) / (X_MAX - X_MIN)) * PLOT_W; }
+function yScale(vaa) { return PAD.t + ((vaa - Y_MAX) / (Y_MIN - Y_MAX)) * PLOT_H; }
+
+function render() {
+  const svg = document.getElementById('chart');
+  svg.innerHTML = '';
+
+  // Grid + axes
+  const grid = document.createElementNS("http://www.w3.org/2000/svg","g");
+  for (let x = X_MIN; x <= X_MAX; x++) {
+    const sx = xScale(x);
+    grid.innerHTML += `<line x1="${sx}" x2="${sx}" y1="${PAD.t}" y2="${PAD.t+PLOT_H}"
+      stroke="#2a3340" stroke-width="${x===0?1:0.5}" stroke-dasharray="${x===0?'':'2,3'}" opacity="${x===0?0.8:0.5}"/>`;
+    grid.innerHTML += `<text x="${sx}" y="${PAD.t+PLOT_H+18}" fill="#8b97a8"
+      font-family="JetBrains Mono" font-size="10" text-anchor="middle">${x>0?'+':''}${x}</text>`;
+  }
+  for (let y = Y_MIN; y <= Y_MAX; y++) {
+    const sy = yScale(y);
+    grid.innerHTML += `<line x1="${PAD.l}" x2="${PAD.l+PLOT_W}" y1="${sy}" y2="${sy}"
+      stroke="#2a3340" stroke-width="0.5" stroke-dasharray="2,3" opacity="0.5"/>`;
+    grid.innerHTML += `<text x="${PAD.l-8}" y="${sy+3}" fill="#8b97a8"
+      font-family="JetBrains Mono" font-size="10" text-anchor="end">${y}</text>`;
+  }
+  grid.innerHTML += `<text x="${PAD.l+PLOT_W/2}" y="${H-18}" fill="#e6edf3"
+    font-family="Bricolage Grotesque" font-size="12" font-weight="700" text-anchor="middle">
+    HAA (°) — ← Glove side    Arm side →</text>`;
+  grid.innerHTML += `<text x="${20}" y="${PAD.t+PLOT_H/2}" fill="#e6edf3"
+    font-family="Bricolage Grotesque" font-size="12" font-weight="700" text-anchor="middle"
+    transform="rotate(-90,20,${PAD.t+PLOT_H/2})">VAA (°)</text>`;
+  svg.appendChild(grid);
+
+  const defs = document.createElementNS("http://www.w3.org/2000/svg","defs");
+  defs.innerHTML = `<clipPath id="plotclip"><rect x="${PAD.l}" y="${PAD.t}" width="${PLOT_W}" height="${PLOT_H}"/></clipPath>`;
+  svg.appendChild(defs);
+
+  // MLB ellipses
+  if (showEllipses) {
+    const eg = document.createElementNS("http://www.w3.org/2000/svg","g");
+    eg.setAttribute("clip-path", "url(#plotclip)");
+    PITCH_ORDER.forEach(code => {
+      if (!visiblePitches.has(code)) return;
+      const pt = MLB.pitch_types[code]; if (!pt) return;
+      const cx = xScale(pt.haa_mean);
+      const cy = yScale(pt.vaa_mean);
+      const [[a,b],[c,d]] = pt.cov;
+      const tr = a + d, det = a*d - b*c;
+      const dis = Math.sqrt(Math.max(0, tr*tr/4 - det));
+      const l1 = tr/2 + dis, l2 = tr/2 - dis;
+      const nstd = MLB.n_std;
+      const semiA_deg = nstd * Math.sqrt(Math.max(0,l1));
+      const semiB_deg = nstd * Math.sqrt(Math.max(0,l2));
+      const vx = b, vy = l1 - a;
+      const norm = Math.hypot(vx, vy) || 1;
+      const exDeg = vx/norm, eyDeg = vy/norm;
+      const x_per_deg = PLOT_W / (X_MAX - X_MIN);
+      const y_per_deg = PLOT_H / (Y_MIN - Y_MAX);
+      const endA_px = { dx: exDeg*semiA_deg*x_per_deg, dy: eyDeg*semiA_deg*y_per_deg };
+      const endB_px = { dx: -eyDeg*semiB_deg*x_per_deg, dy: exDeg*semiB_deg*y_per_deg };
+      const rx = Math.hypot(endA_px.dx, endA_px.dy);
+      const ry = Math.hypot(endB_px.dx, endB_px.dy);
+      const angle = Math.atan2(endA_px.dy, endA_px.dx) * 180/Math.PI;
+
+      const el = document.createElementNS("http://www.w3.org/2000/svg","ellipse");
+      el.setAttribute("cx", cx); el.setAttribute("cy", cy);
+      el.setAttribute("rx", rx); el.setAttribute("ry", ry);
+      el.setAttribute("transform", `rotate(${angle},${cx},${cy})`);
+      el.setAttribute("fill", pt.color); el.setAttribute("fill-opacity", "0.13");
+      el.setAttribute("stroke", pt.color); el.setAttribute("stroke-width", "1.8");
+      el.setAttribute("stroke-opacity", "0.85");
+      eg.appendChild(el);
+
+      const dot = document.createElementNS("http://www.w3.org/2000/svg","circle");
+      dot.setAttribute("cx", cx); dot.setAttribute("cy", cy); dot.setAttribute("r", "3.5");
+      dot.setAttribute("fill", pt.color); dot.setAttribute("stroke","#0e1116"); dot.setAttribute("stroke-width","1.5");
+      eg.appendChild(dot);
+
+      if (showLabels) {
+        const t = document.createElementNS("http://www.w3.org/2000/svg","text");
+        t.setAttribute("x", cx); t.setAttribute("y", cy - 6);
+        t.setAttribute("fill", pt.color); t.setAttribute("font-family","JetBrains Mono");
+        t.setAttribute("font-size","9.5"); t.setAttribute("font-weight","700");
+        t.setAttribute("text-anchor","middle"); t.textContent = pt.label;
+        eg.appendChild(t);
+      }
+    });
+    svg.appendChild(eg);
+  }
+
+  // Pitcher pitches
+  if (selectedPitcher && TRACKMAN && TRACKMAN.pitchers[selectedPitcher]) {
+    const p = TRACKMAN.pitchers[selectedPitcher];
+    const pg = document.createElementNS("http://www.w3.org/2000/svg","g");
+    pg.setAttribute("clip-path", "url(#plotclip)");
+
+    if (showIndiv) {
+      Object.entries(p.pitch_types).forEach(([code, info]) => {
+        if (!visiblePitches.has(code)) return;
+        const color = (MLB.pitch_types[code] || {}).color || "#999";
+        info.pitches.forEach(pp => {
+          const c = document.createElementNS("http://www.w3.org/2000/svg","circle");
+          c.setAttribute("cx", xScale(pp.haa));
+          c.setAttribute("cy", yScale(pp.vaa));
+          c.setAttribute("r", "2.5");
+          c.setAttribute("fill", color); c.setAttribute("fill-opacity","0.55");
+          c.setAttribute("stroke","#0e1116"); c.setAttribute("stroke-width","0.5");
+          pg.appendChild(c);
+        });
+      });
+    }
+
+    if (showDots) {
+      Object.entries(p.pitch_types).forEach(([code, info]) => {
+        if (!visiblePitches.has(code)) return;
+        const color = (MLB.pitch_types[code] || {}).color || "#999";
+        const label = (MLB.pitch_types[code] || {}).label || code;
+        const cx = xScale(info.haa_mean);
+        const cy = yScale(info.vaa_mean);
+        const r = Math.min(14, 5 + Math.sqrt(info.n));
+
+        const halo = document.createElementNS("http://www.w3.org/2000/svg","circle");
+        halo.setAttribute("cx", cx); halo.setAttribute("cy", cy); halo.setAttribute("r", r+4);
+        halo.setAttribute("fill", color); halo.setAttribute("fill-opacity","0.18");
+        pg.appendChild(halo);
+
+        const c = document.createElementNS("http://www.w3.org/2000/svg","circle");
+        c.setAttribute("cx", cx); c.setAttribute("cy", cy); c.setAttribute("r", r);
+        c.setAttribute("fill", color); c.setAttribute("stroke","#e6edf3"); c.setAttribute("stroke-width","2");
+        c.style.cursor = 'pointer';
+        c.addEventListener('mousemove', (ev) => {
+          const tip = document.getElementById('tip');
+          tip.style.opacity = 1;
+          const rect = svg.getBoundingClientRect();
+          tip.style.left = (ev.clientX - rect.left) + 'px';
+          tip.style.top  = (ev.clientY - rect.top) + 'px';
+          const mlbPt = MLB.pitch_types[code] || {};
+          tip.innerHTML = `<b>${label}</b> · n=${info.n}<br>
+            HAA: ${info.haa_mean.toFixed(2)}° <span style="color:#8b97a8">(MLB ${mlbPt.haa_mean?.toFixed(2)}°)</span><br>
+            VAA: ${info.vaa_mean.toFixed(2)}° <span style="color:#8b97a8">(MLB ${mlbPt.vaa_mean?.toFixed(2)}°)</span><br>
+            ${info.velo_mean ? 'Velo: ' + info.velo_mean.toFixed(1) + ' mph' : ''}`;
+        });
+        c.addEventListener('mouseleave', () => { document.getElementById('tip').style.opacity = 0; });
+        pg.appendChild(c);
+
+        if (showLabels) {
+          const t = document.createElementNS("http://www.w3.org/2000/svg","text");
+          t.setAttribute("x", cx); t.setAttribute("y", cy + r + 12);
+          t.setAttribute("fill", "#e6edf3"); t.setAttribute("font-family","JetBrains Mono");
+          t.setAttribute("font-size","10"); t.setAttribute("font-weight","600");
+          t.setAttribute("text-anchor","middle");
+          t.textContent = `${code} · ${info.n}`;
+          pg.appendChild(t);
+        }
+      });
+    }
+    svg.appendChild(pg);
+  }
+
+  // Caption
+  document.getElementById('chartCaption').textContent =
+    selectedPitcher ? `${selectedPitcher} (${TRACKMAN.pitchers[selectedPitcher].throws}HP) vs MLB ellipses`
+                    : "MLB ellipses · select a pitcher to overlay";
+
+  // Detail panel
+  const detail = document.getElementById('detail');
+  if (selectedPitcher && TRACKMAN && TRACKMAN.pitchers[selectedPitcher]) {
+    const p = TRACKMAN.pitchers[selectedPitcher];
+    detail.innerHTML = `
+      <div class="detail">
+        <div class="detail-head">
+          <span class="name">${escapeHtml(selectedPitcher)}<span class="throws">${p.throws}HP</span></span>
+          <span class="sub">${p.total_pitches} pitches total</span>
+        </div>
+        <div class="detail-grid">
+          ${PITCH_ORDER.filter(c => p.pitch_types[c]).map(c => {
+            const info = p.pitch_types[c];
+            const meta = MLB.pitch_types[c] || {};
+            const dh = info.haa_mean - (meta.haa_mean ?? 0);
+            const dv = info.vaa_mean - (meta.vaa_mean ?? 0);
+            const dhCls = Math.abs(dh) > 0.5 ? (dh > 0 ? 'delta-pos' : 'delta-neg') : '';
+            const dvCls = Math.abs(dv) > 0.5 ? (dv > 0 ? 'delta-pos' : 'delta-neg') : '';
+            return `<div class="detail-cell" style="border-color:${meta.color||'#999'}">
+              <div class="pt" style="color:${meta.color||'#999'}">${meta.label || c} · n=${info.n}</div>
+              <div class="v">HAA ${info.haa_mean.toFixed(2)}° <span class="${dhCls}">(${dh>=0?'+':''}${dh.toFixed(2)})</span></div>
+              <div class="v">VAA ${info.vaa_mean.toFixed(2)}° <span class="${dvCls}">(${dv>=0?'+':''}${dv.toFixed(2)})</span></div>
+              ${info.velo_mean ? `<div class="meta">${info.velo_mean.toFixed(1)} mph</div>` : ''}
+            </div>`;
+          }).join('')}
+        </div>
+      </div>
+    `;
+  } else {
+    detail.innerHTML = '';
+  }
+
+  renderLegend();
+}
+
+function renderLegend() {
+  const l = document.getElementById('legend');
+  l.innerHTML = PITCH_ORDER.map(code => {
+    const pt = MLB.pitch_types[code]; if (!pt) return '';
+    const off = visiblePitches.has(code) ? '' : 'off';
+    return `<span class="legend-item ${off}" data-code="${code}">
+      <span class="swatch" style="background:${pt.color}"></span>${pt.label}
+    </span>`;
+  }).join('');
+  l.querySelectorAll('.legend-item').forEach(el => {
+    el.addEventListener('click', () => {
+      const code = el.dataset.code;
+      if (visiblePitches.has(code)) visiblePitches.delete(code);
+      else visiblePitches.add(code);
+      render();
+    });
+  });
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+}
+
+render();
+renderTable();
+</script>
+</body>
+</html>
