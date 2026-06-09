@@ -231,11 +231,14 @@ warnings.filterwarnings("ignore")
 STRIKE_CALLS = {"StrikeCalled", "StrikeSwinging", "FoulBallNotFieldable", "InPlay"}
 SWING_CALLS  = {"StrikeSwinging", "FoulBallNotFieldable", "InPlay"}
 PITCH_COLORS = {
-    "Fastball": "#D32F2F", "FourSeamFastBall": "#D32F2F", "Four-Seam": "#D32F2F",
-    "Sinker": "#E65100", "TwoSeamFastBall": "#E65100", "Two-Seam": "#E65100",
-    "Cutter": "#B8A000", "Slider": "#00897B", "Curveball": "#1565C0",
-    "ChangeUp": "#F9A825", "Changeup": "#F9A825",
-    "Splitter": "#00796B", "Sweeper": "#7B1FA2",
+    "Fastball": "#E91E63", "FourSeamFastBall": "#E91E63", "Four-Seam": "#E91E63",
+    "Sinker": "#00BCD4", "TwoSeamFastBall": "#00BCD4", "Two-Seam": "#00BCD4",
+    "Cutter": "#FF9800",
+    "Slider": "#009688",
+    "Curveball": "#3F51B5",
+    "ChangeUp": "#4CAF50", "Changeup": "#4CAF50",
+    "Splitter": "#9C27B0",
+    "Sweeper": "#795548",
     "Knuckleball": "#9E9E9E", "Other": "#888888",
 }
 BG_COLOR = "#FFFFFF"
@@ -738,12 +741,12 @@ def fmt(s, fn="mean", d=1):
 # DRAWING FUNCTIONS
 # ===========================================================================
 def draw_zone(ax, data, title, pts):
-    ax.set_facecolor(PANEL_COLOR)
-    ax.add_patch(Rectangle((-0.95, 1.6), 1.9, 1.9, fill=False, ec="#333333", lw=1.5, alpha=0.8, zorder=3))
-    ax.add_patch(Rectangle((-0.95, 1.6), 1.9, 1.9, fill=True, fc="#E8EDF2", alpha=0.3, zorder=2))
+    ax.set_facecolor("#FFFFFF")
+    ax.add_patch(Rectangle((-0.95, 1.6), 1.9, 1.9, fill=False, ec="#1a1a1a", lw=1.6, alpha=0.9, zorder=3))
+    ax.add_patch(Rectangle((-0.95, 1.6), 1.9, 1.9, fill=True, fc="#F4F6F9", alpha=0.45, zorder=2))
     ax.add_patch(Rectangle((-1.4, 1.2), 2.8, 2.7, fill=False, ec="#AAAAAA", lw=0.7, ls="--", alpha=0.4, zorder=2))
     ax.add_patch(Polygon([(-.708, .55), (.708, .55), (.708, .35), (0, .15), (-.708, .35)],
-                         closed=True, fc="none", ec=MUTED_TEXT, lw=.7, alpha=0.4))
+                         closed=True, fc="none", ec="#999999", lw=.7, alpha=0.5))
     outcome_markers = {
         "BallCalled": ("o", False), "BallinDirt": ("o", False), "BallIntentional": ("o", False),
         "StrikeCalled": ("o", True), "StrikeSwinging": ("X", True),
@@ -760,58 +763,66 @@ def draw_zone(ax, data, title, pts):
             valid = x.notna() & y.notna()
             if not valid.any(): continue
             if filled:
-                ax.scatter(x[valid], y[valid], marker=marker, c=color, s=45, alpha=0.9,
-                           edgecolors="black", linewidths=0.3, zorder=5)
+                ax.scatter(x[valid], y[valid], marker=marker, c=color, s=48, alpha=0.92,
+                           edgecolors="white", linewidths=0.6, zorder=5)
             else:
-                ax.scatter(x[valid], y[valid], marker=marker, c="none", s=45, alpha=0.9,
-                           edgecolors=color, linewidths=1.2, zorder=5)
+                ax.scatter(x[valid], y[valid], marker=marker, c="none", s=48, alpha=0.92,
+                           edgecolors=color, linewidths=1.3, zorder=5)
     ax.set_xlim(-2.5, 2.5); ax.set_ylim(0, 5); ax.set_aspect("equal")
-    ax.set_title(title, fontsize=13, fontweight="bold", color=TEXT_COLOR, pad=6)
+    ax.set_title(title, fontsize=13, fontweight="bold", color="#1a1a1a", pad=6)
     ax.set_xticks([]); ax.set_yticks([])
-    for sp in ax.spines.values(): sp.set_visible(False)
+    for sp in ax.spines.values():
+        sp.set_visible(True); sp.set_color("#222222"); sp.set_linewidth(0.8)
 
 def draw_mov(ax, data, pts):
-    ax.set_facecolor(PANEL_COLOR)
-    ax.axhline(0, color=GRID_COLOR, ls="-", lw=1, zorder=1)
-    ax.axvline(0, color=GRID_COLOR, ls="-", lw=1, zorder=1)
+    ax.set_facecolor("#FFFFFF")
+    ax.axhline(0, color="#8B7355", ls="--", lw=0.8, alpha=0.7, zorder=1)
+    ax.axvline(0, color="#8B7355", ls="--", lw=0.8, alpha=0.7, zorder=1)
     for r in [5, 10, 15, 20]:
-        ax.add_patch(plt.Circle((0, 0), r, fill=False, ec=GRID_COLOR, lw=0.3, ls="--", alpha=0.3))
+        ax.add_patch(plt.Circle((0, 0), r, fill=False, ec="#999999", lw=0.35, ls="--", alpha=0.25))
     for pt in pts:
         s = data[data["PitchType"] == pt]
         if not s.empty:
             ax.scatter(s["HorzBreak"], s["InducedVertBreak"],
-                       c=pc(pt), label=pt, s=40, alpha=.9, edgecolors="black", linewidths=0.3, zorder=5)
+                       c=pc(pt), label=pt, s=42, alpha=.9, edgecolors="white", linewidths=0.7, zorder=5)
     ax.set_xlim(-25, 25); ax.set_ylim(-25, 25)
-    ax.set_xlabel("HB (in)", fontsize=11, color=MUTED_TEXT)
-    ax.set_ylabel("IVB (in)", fontsize=11, color=MUTED_TEXT)
-    ax.set_title("Pitch Movement", fontsize=13, fontweight="bold", color=TEXT_COLOR, pad=6)
-    ax.legend(loc="upper center", bbox_to_anchor=(.5, -.06), ncol=min(len(pts), 5),
-              fontsize=10, frameon=False, labelcolor=TEXT_COLOR)
-    ax.tick_params(labelsize=6, colors=MUTED_TEXT)
-    for sp in ax.spines.values(): sp.set_color(GRID_COLOR)
+    ax.set_xlabel("Horizontal Break (in)", fontsize=10, color="#333333")
+    ax.set_ylabel("Induced Vertical Break (in)", fontsize=10, color="#333333")
+    ax.set_title("Pitch Breaks", fontsize=13, fontweight="bold", color="#1a1a1a", pad=6)
+    ax.legend(loc="upper center", bbox_to_anchor=(.5, -.08), ncol=min(len(pts), 5),
+              fontsize=10, frameon=False, labelcolor="#333333")
+    ax.tick_params(labelsize=8, colors="#444444")
+    ax.grid(True, alpha=0.18, linewidth=0.4)
+    ax.set_aspect("equal")
+    ax.text(-23, -22, "\u2190 Glove Side", fontsize=8, alpha=0.75, color="#333333",
+            bbox=dict(boxstyle="round,pad=0.25", facecolor="white", edgecolor="#aaaaaa", linewidth=0.4))
+    ax.text(11, -22, "Arm Side \u2192", fontsize=8, alpha=0.75, color="#333333",
+            bbox=dict(boxstyle="round,pad=0.25", facecolor="white", edgecolor="#aaaaaa", linewidth=0.4))
+    for sp in ax.spines.values(): sp.set_color("#cccccc")
 
 def draw_release(ax, data, pts):
-    ax.set_facecolor(PANEL_COLOR)
+    ax.set_facecolor("#FFFFFF")
     all_rs = data["RelSide"].dropna(); all_rh = data["RelHeight"].dropna()
     for pt in pts:
         valid = data.loc[data["PitchType"] == pt, ["RelSide", "RelHeight"]].dropna()
         if not valid.empty:
             ax.scatter(valid["RelSide"].mean(), valid["RelHeight"].mean(),
-                       c=pc(pt), s=80, alpha=0.95, edgecolors="black", linewidths=0.8, zorder=5)
+                       c=pc(pt), s=90, alpha=0.95, edgecolors="white", linewidths=1.2, zorder=5)
     if not all_rs.empty and not all_rh.empty:
         avg_rs, avg_rh = all_rs.mean(), all_rh.mean()
-        ax.axhline(avg_rh, color=ACCENT_COLOR, lw=1, alpha=0.5, zorder=3)
-        ax.axvline(avg_rs, color=ACCENT_COLOR, lw=1, alpha=0.5, zorder=3)
+        ax.axhline(avg_rh, color="#8B7355", lw=0.8, ls="--", alpha=0.6, zorder=3)
+        ax.axvline(avg_rs, color="#8B7355", lw=0.8, ls="--", alpha=0.6, zorder=3)
         ax.text(avg_rs, avg_rh - 0.3, f"Avg ({avg_rs:.1f}, {avg_rh:.1f})",
-                ha="center", va="top", fontsize=9, color=ACCENT_COLOR, family="monospace",
-                fontweight="bold", bbox=dict(boxstyle="round,pad=0.2", fc=BG_COLOR,
-                ec=ACCENT_COLOR, alpha=0.9, lw=0.5))
-    ax.axvline(0, color=MUTED_TEXT, lw=0.5, ls="--", alpha=0.3)
-    ax.set_xlabel("Release Side (ft)", fontsize=11, color=MUTED_TEXT)
-    ax.set_ylabel("Release Height (ft)", fontsize=11, color=MUTED_TEXT)
-    ax.set_title("Release Point", fontsize=13, fontweight="bold", color=TEXT_COLOR, pad=6)
-    ax.tick_params(labelsize=6, colors=MUTED_TEXT)
-    for sp in ax.spines.values(): sp.set_color(GRID_COLOR)
+                ha="center", va="top", fontsize=8, color="#333333",
+                fontweight="bold", bbox=dict(boxstyle="round,pad=0.25", fc="white",
+                ec="#aaaaaa", alpha=0.95, lw=0.4))
+    ax.axvline(0, color="#999999", lw=0.5, ls="--", alpha=0.3)
+    ax.set_xlabel("Release Side (ft)", fontsize=10, color="#333333")
+    ax.set_ylabel("Release Height (ft)", fontsize=10, color="#333333")
+    ax.set_title("Release Point", fontsize=13, fontweight="bold", color="#1a1a1a", pad=6)
+    ax.tick_params(labelsize=8, colors="#444444")
+    ax.grid(True, alpha=0.18, linewidth=0.4)
+    for sp in ax.spines.values(): sp.set_color("#cccccc")
     if not all_rs.empty and not all_rh.empty:
         rs_c, rh_c = all_rs.mean(), all_rh.mean()
         rs_std = all_rs.std() if len(all_rs) > 1 else 0.3
@@ -1157,6 +1168,25 @@ def identify_team_code(df, team_name, ht, at):
 # ===========================================================================
 # GENERATE ONE PITCHER PAGE
 # ===========================================================================
+def _display_name(name):
+    """Convert 'Last, First' -> 'First Last' for display."""
+    try:
+        s = str(name)
+        if "," in s:
+            last, first = [x.strip() for x in s.split(",", 1)]
+            if first:
+                return f"{first} {last}"
+    except Exception:
+        pass
+    return str(name)
+
+def _hand_label(df):
+    """Return 'LHP' or 'RHP' inferred from release side."""
+    try:
+        return "LHP" if _infer_hand_from_relside(df) == "L" else "RHP"
+    except Exception:
+        return ""
+
 def generate_pitcher_page(p, pname, gdate, opp):
     N = len(p)
     if N == 0: return None
@@ -1183,29 +1213,36 @@ def generate_pitcher_page(p, pname, gdate, opp):
 
     pts = p["PitchType"].value_counts().index.tolist()
 
-    fig = plt.figure(figsize=(26, 16), facecolor=BG_COLOR)
+    fig = plt.figure(figsize=(26, 16), facecolor="white")
     gs = GridSpec(4, 4, figure=fig,
-                  height_ratios=[.06, .02, .42, .50],
+                  height_ratios=[.07, .025, .42, .49],
                   width_ratios=[1, 1, 1, 0.65],
-                  hspace=.18, wspace=.18,
-                  top=0.96, bottom=0.02, left=0.03, right=0.97)
+                  hspace=.18, wspace=.20,
+                  top=0.97, bottom=0.02, left=0.03, right=0.97)
 
-    ax = fig.add_subplot(gs[0, :]); ax.set_facecolor(BG_COLOR); ax.axis("off")
-    ax.text(.5, .78, pname.upper(), ha="center", va="center", fontsize=34,
-            fontweight="bold", color=TEXT_COLOR, family="monospace")
-    ax.text(.5, .22, f"{gdate:%B %d, %Y}   ·   vs {opp}",
-            ha="center", va="center", fontsize=16, color=ACCENT_COLOR, family="monospace")
+    # ── Header (Munn style: name, hand • opponent, date) ──
+    hand = _hand_label(p)
+    ax = fig.add_subplot(gs[0, :]); ax.set_facecolor("white"); ax.axis("off")
+    ax.text(.5, .80, _display_name(pname), ha="center", va="center", fontsize=32,
+            fontweight="bold", color="#1a1a1a")
+    sub_bits = [b for b in [hand, f"vs {opp}"] if b]
+    ax.text(.5, .38, "  \u2022  ".join(sub_bits), ha="center", va="center",
+            fontsize=14, color="#555555")
+    ax.text(.5, .06, f"{gdate:%B %d, %Y}", ha="center", va="center",
+            fontsize=11, style="italic", color="#777777")
 
-    ax = fig.add_subplot(gs[1, :]); ax.set_facecolor(BG_COLOR); ax.axis("off")
-    stats_str = (f"IP {ip}   ·   PA {pa}   ·   P {N}   ·   "
-                 f"H {hits + hr}   ·   K {k}   ·   BB {bb}   ·   HBP {hbp}   ·   HR {hr}   ·   "
+    # ── Stats banner ──
+    ax = fig.add_subplot(gs[1, :]); ax.set_facecolor("white"); ax.axis("off")
+    stats_str = (f"IP {ip}    \u2022    PA {pa}    \u2022    P {N}    \u2022    "
+                 f"H {hits + hr}    \u2022    K {k}    \u2022    BB {bb}    \u2022    HBP {hbp}    \u2022    HR {hr}    \u2022    "
                  f"STR% {spct}%")
-    ax.text(.5, .65, stats_str, ha="center", va="center", fontsize=14,
-            color=TEXT_COLOR, family="monospace", fontweight="bold")
-    legend_str = "○ Ball    ● Called Strike    ✕ Swinging Strike    ▲ Foul    ■ In Play"
-    ax.text(.5, .05, legend_str, ha="center", va="center", fontsize=11,
-            color=TEXT_COLOR, family="monospace")
+    ax.text(.5, .68, stats_str, ha="center", va="center", fontsize=14,
+            color="#1a1a1a", fontweight="bold")
+    legend_str = "\u25cb Ball     \u25cf Called Strike     \u2715 Swinging Strike     \u25b2 Foul     \u25a0 In Play"
+    ax.text(.5, .02, legend_str, ha="center", va="center", fontsize=10.5,
+            color="#777777")
 
+    # ── Panels ──
     lhb = p[p["BatterSide"] == "Left"]
     ax_l = fig.add_subplot(gs[2, 0]); draw_zone(ax_l, lhb, f"vs LHB ({len(lhb)})", pts)
     rhb = p[p["BatterSide"] == "Right"]
@@ -1213,7 +1250,8 @@ def generate_pitcher_page(p, pname, gdate, opp):
     ax_m = fig.add_subplot(gs[2, 2]); draw_mov(ax_m, p, pts)
     ax_rp = fig.add_subplot(gs[2, 3]); draw_release(ax_rp, p, pts)
 
-    ax_t = fig.add_subplot(gs[3, :]); ax_t.set_facecolor(BG_COLOR); ax_t.axis("off")
+    # ── Table (all existing columns + grading preserved) ──
+    ax_t = fig.add_subplot(gs[3, :]); ax_t.set_facecolor("white"); ax_t.axis("off")
     trows = []
     grade_cells = {}
     for ri, pt in enumerate(pts):
@@ -1274,21 +1312,21 @@ def generate_pitcher_page(p, pname, gdate, opp):
                      colLabels=cols, loc="center", cellLoc="center")
     tbl.auto_set_font_size(False)
     tbl.set_fontsize(12)
-    tbl.scale(1, 2.8)
+    tbl.scale(1, 2.6)
 
     for (row, col), cell in tbl.get_celld().items():
-        cell.set_edgecolor(GRID_COLOR); cell.set_linewidth(0.6)
+        cell.set_edgecolor("#cccccc"); cell.set_linewidth(0.4)
         if row == 0:
-            cell.set_facecolor("#1E1E2E")
-            cell.set_text_props(fontweight="bold", color="white", fontfamily="monospace", fontsize=12)
+            cell.set_facecolor("#2C2C2C")
+            cell.set_text_props(fontweight="bold", color="white", fontsize=12)
         elif col == -1:
             pitch_name = cell.get_text().get_text()
             if pitch_name == "All":
-                cell.set_facecolor("#E8E8E8")
-                cell.set_text_props(fontweight="bold", color=TEXT_COLOR, fontfamily="monospace", fontsize=13)
+                cell.set_facecolor("#FFFFFF")
+                cell.set_text_props(fontweight="bold", color="#1a1a1a", fontsize=13)
             else:
                 cell.set_facecolor(pc(pitch_name))
-                cell.set_text_props(fontweight="bold", color="white", fontfamily="monospace", fontsize=13)
+                cell.set_text_props(fontweight="bold", color="white", fontsize=13)
         else:
             graded = False
             if (row, col) in grade_cells and row <= len(pts):
@@ -1296,18 +1334,18 @@ def generate_pitcher_page(p, pname, gdate, opp):
                 gc = grade_color(pt_name, stat_name, raw_val, higher_better)
                 if gc is not None:
                     cell.set_facecolor(gc)
-                    cell.set_text_props(color=TEXT_COLOR, fontfamily="monospace", fontweight="bold", fontsize=12)
+                    cell.set_text_props(color="#1a1a1a", fontweight="bold", fontsize=12)
                     graded = True
             if not graded:
                 if row == len(trows):
-                    cell.set_facecolor("#E8E8E8")
-                    cell.set_text_props(color=TEXT_COLOR, fontweight="bold", fontfamily="monospace", fontsize=12)
+                    cell.set_facecolor("#F2F2F2")
+                    cell.set_text_props(color="#1a1a1a", fontweight="bold", fontsize=12)
                 elif row % 2 == 0:
-                    cell.set_facecolor("#F4F6F9")
-                    cell.set_text_props(color=TEXT_COLOR, fontfamily="monospace", fontsize=12)
+                    cell.set_facecolor("#F7F7F7")
+                    cell.set_text_props(color="#1a1a1a", fontsize=12)
                 else:
                     cell.set_facecolor("#FFFFFF")
-                    cell.set_text_props(color=TEXT_COLOR, fontfamily="monospace", fontsize=12)
+                    cell.set_text_props(color="#1a1a1a", fontsize=12)
 
     return fig
 
@@ -1320,251 +1358,303 @@ def calc_fip(k, bb, hbp_ct, hr_ct, ip_str):
     if ip == 0: return 0.0
     return (13 * hr_ct + 3 * (bb + hbp_ct) - 2 * k) / ip + 3.10
 
-def generate_season_summary(pitcher_name, outings, date_from, date_to):
-    all_dfs = []
-    for p_df, gdate, opp in outings:
-        df_copy = p_df.copy()
-        df_copy["_game_date"] = gdate
-        df_copy["_opp"] = opp
-        all_dfs.append(df_copy)
-    p = pd.concat(all_dfs, ignore_index=True)
-    N = len(p)
-    if N == 0: return None
+# Display-name overrides for the season summary (matches the Munn PDF look)
+SS_PITCH_DISPLAY = {
+    "Fastball":  "4-Seam",
+    "Cutter":    "Cutter",
+    "Curveball": "Curveball",
+    "Slider":    "Slider",
+    "ChangeUp":  "Changeup",
+    "Splitter":  "Splitter",
+    "Sinker":    "Sinker",
+    "Sweeper":   "Sweeper",
+    "Knuckleball": "Knuckleball",
+    "Other":     "Other",
+}
 
-    total_ip_outs = 0; total_k = 0; total_bb = 0
-    total_hbp = 0; total_hr = 0; total_hits = 0; total_pa = 0
-    for p_df, gdate, opp in outings:
-        ip_s = calc_ip(p_df)
-        parts = ip_s.split(".")
-        total_ip_outs += int(parts[0]) * 3 + int(parts[1])
-        total_k += int((p_df["KorBB"] == "Strikeout").sum())
-        total_bb += int((p_df["KorBB"] == "Walk").sum())
-        total_hbp += int((p_df["PitchCall"] == "HitByPitch").sum())
-        total_hr += int((p_df["PlayResult"] == "HomeRun").sum())
-        total_hits += int(p_df["PlayResult"].isin(["Single", "Double", "Triple"]).sum())
-        total_pa += calc_pa(p_df)
+def _ss_is_swing(df):
+    return df["PitchCall"].isin(SWING_CALLS)
 
-    ip_full = total_ip_outs // 3; ip_rem = total_ip_outs % 3
-    ip_str = f"{ip_full}.{ip_rem}"
-    ip_float = ip_full + ip_rem / 3.0
-    whip = ((total_bb + total_hits + total_hr) / ip_float) if ip_float > 0 else 0
-    k_pct = (total_k / total_pa * 100) if total_pa > 0 else 0
-    bb_pct = (total_bb / total_pa * 100) if total_pa > 0 else 0
-    fip = calc_fip(total_k, total_bb, total_hbp, total_hr, ip_str)
+def _ss_plot_velo_distribution(ax, sm, pitch_order):
+    """Ridge-style KDE per pitch type (Munn style)."""
+    n = len(pitch_order)
+    offset_step = 1.0
+    all_velos = sm["RelSpeed"].dropna()
+    x_min = max(60, int(all_velos.min()) - 3) if len(all_velos) > 0 else 70
+    x_max = min(105, int(all_velos.max()) + 3) if len(all_velos) > 0 else 100
 
-    wh = p["PitchCall"] == "StrikeSwinging"
-    sw = p["PitchCall"].isin(SWING_CALLS)
-    iz = p["InZone"]; ooz = ~iz
-    zpct = round(iz.sum() / N * 100, 1)
-    wpct = round(wh.sum() / sw.sum() * 100, 1) if sw.sum() else 0
-    cpct = round((sw & ooz).sum() / ooz.sum() * 100, 1) if ooz.sum() else 0
-    iz_sw = (sw & iz).sum(); iz_wh_ct = (wh & iz).sum()
-    izwp = round(iz_wh_ct / iz_sw * 100, 1) if iz_sw else 0
-    pts = p["PitchType"].value_counts().index.tolist()
-
-    fig = plt.figure(figsize=(26, 17), facecolor=BG_COLOR)
-    gs = GridSpec(4, 3, figure=fig,
-                  height_ratios=[.06, .04, .36, .54],
-                  width_ratios=[1, 1.2, 1.2],
-                  hspace=.22, wspace=.22,
-                  top=0.96, bottom=0.02, left=0.04, right=0.97)
-
-    ax = fig.add_subplot(gs[0, :]); ax.set_facecolor(BG_COLOR); ax.axis("off")
-    ax.text(.5, .7, pitcher_name.upper(), ha="center", va="center", fontsize=34,
-            fontweight="bold", color=TEXT_COLOR, family="monospace")
-    ax.text(.5, .1, "Season Pitching Summary", ha="center", va="center",
-            fontsize=16, color=ACCENT_COLOR, family="monospace")
-
-    ax = fig.add_subplot(gs[1, :]); ax.set_facecolor(BG_COLOR); ax.axis("off")
-    outing_details = []
-    for p_df, gdate, opp in outings:
-        o_ip = calc_ip(p_df)
-        o_k = int((p_df["KorBB"] == "Strikeout").sum())
-        o_bb = int((p_df["KorBB"] == "Walk").sum())
-        outing_details.append(f"{gdate} vs {opp}: {o_ip}IP {o_k}K {o_bb}BB")
-
-    banner = (f"IP {ip_str}   ·   FIP {fip:.2f}   ·   WHIP {whip:.2f}   ·   "
-              f"K% {k_pct:.1f}%   ·   BB% {bb_pct:.1f}%   ·   K-BB% {k_pct - bb_pct:.1f}%   ·   "
-              f"PA {total_pa}   ·   P {N}   ·   H {total_hits + total_hr}   ·   HR {total_hr}   ·   "
-              f"K {total_k}   ·   BB {total_bb}   ·   {len(outings)} outing(s)")
-    ax.text(.5, .7, banner, ha="center", va="center", fontsize=14, color=TEXT_COLOR, family="monospace", fontweight="bold")
-    ax.text(.5, .2, f"{date_from} to {date_to}     |     " + "  /  ".join(outing_details),
-            ha="center", va="center", fontsize=11, color=MUTED_TEXT, family="monospace")
-
-    ax_velo = fig.add_subplot(gs[2, 0]); ax_velo.set_facecolor(PANEL_COLOR)
-    pt_velo_sorted = sorted(pts, key=lambda x: p[p["PitchType"] == x]["RelSpeed"].median()
-                            if not p[p["PitchType"] == x]["RelSpeed"].dropna().empty else 0, reverse=True)
-    for i, pt in enumerate(pt_velo_sorted):
-        velos = p.loc[p["PitchType"] == pt, "RelSpeed"].dropna()
-        if len(velos) < 3: continue
+    for i, pt in enumerate(pitch_order):
+        velos = sm[sm["PitchType"] == pt]["RelSpeed"].dropna().values
+        base_y = (n - 1 - i) * offset_step
+        label = SS_PITCH_DISPLAY.get(pt, pt)
+        if len(velos) < 2:
+            if len(velos):
+                ax.plot([velos[0], velos[0]], [base_y, base_y + 0.6],
+                        color=pc(pt), lw=1.2)
+            ax.text(x_min - 1, base_y + 0.15, label,
+                    fontsize=7, ha="right", va="center", color="#333")
+            continue
         try:
-            kde = gaussian_kde(velos, bw_method=0.3)
-            x_range = np.linspace(velos.min() - 3, velos.max() + 3, 200)
-            density = kde(x_range)
-            density = density / density.max() * 0.38
-            ax_velo.fill_betweenx(i + density, x_range, i - density, alpha=0.7, color=pc(pt))
-            ax_velo.plot(x_range, i + density, color="black", lw=0.4)
-            ax_velo.plot(x_range, i - density, color="black", lw=0.4)
-            med = velos.median()
-            ax_velo.plot([med, med], [i - 0.3, i + 0.3], color="black", lw=1, ls="--", alpha=0.5)
-        except:
-            pass
-    ax_velo.set_yticks(range(len(pt_velo_sorted)))
-    ax_velo.set_yticklabels(pt_velo_sorted, fontsize=12, fontfamily="monospace")
-    ax_velo.set_xlabel("Velocity (mph)", fontsize=12, color=MUTED_TEXT)
-    ax_velo.set_title("Velocity Distribution", fontsize=14, fontweight="bold", color=TEXT_COLOR, pad=6)
-    ax_velo.tick_params(labelsize=6, colors=MUTED_TEXT)
-    for sp in ax_velo.spines.values(): sp.set_color(GRID_COLOR)
+            kde = gaussian_kde(velos, bw_method=0.35)
+        except Exception:
+            continue
+        xs = np.linspace(x_min, x_max, 300)
+        ys = kde(xs); ys = ys / ys.max() * 0.85
+        ax.fill_between(xs, base_y, base_y + ys, color=pc(pt), alpha=0.55,
+                        edgecolor=pc(pt), linewidth=0.9)
+        mean_v = velos.mean()
+        idx = np.argmin(np.abs(xs - mean_v))
+        ax.plot([mean_v, mean_v], [base_y, base_y + ys[idx]],
+                color=pc(pt), lw=0.8, linestyle=":")
+        ax.text(x_min - 1, base_y + 0.15, label,
+                fontsize=7, ha="right", va="center", color="#333")
 
-    ax_mov = fig.add_subplot(gs[2, 1]); ax_mov.set_facecolor(PANEL_COLOR)
-    ax_mov.axhline(0, color=GRID_COLOR, ls="-", lw=1, zorder=1)
-    ax_mov.axvline(0, color=GRID_COLOR, ls="-", lw=1, zorder=1)
-    for r in [5, 10, 15, 20]:
-        ax_mov.add_patch(plt.Circle((0, 0), r, fill=False, ec=GRID_COLOR, lw=0.3, ls="--", alpha=0.3))
-    for pt in pts:
-        s = p[p["PitchType"] == pt]
-        hb = s["HorzBreak"].dropna(); ivb = s["InducedVertBreak"].dropna()
-        if not hb.empty and not ivb.empty:
-            ax_mov.scatter(hb.mean(), ivb.mean(), c=pc(pt), label=pt, s=120, alpha=0.95,
-                          edgecolors="black", linewidths=1, zorder=5, marker="o")
-    ax_mov.set_xlim(-25, 25); ax_mov.set_ylim(-25, 25)
-    ax_mov.set_xlabel("HB (in)", fontsize=12, color=MUTED_TEXT)
-    ax_mov.set_ylabel("IVB (in)", fontsize=12, color=MUTED_TEXT)
-    ax_mov.set_title("Avg Pitch Movement", fontsize=14, fontweight="bold", color=TEXT_COLOR, pad=6)
-    ax_mov.legend(loc="upper center", bbox_to_anchor=(.5, -.06), ncol=min(len(pts), 5),
-                  fontsize=12, frameon=False, labelcolor=TEXT_COLOR)
-    ax_mov.tick_params(labelsize=6, colors=MUTED_TEXT)
-    for sp in ax_mov.spines.values(): sp.set_color(GRID_COLOR)
+    ax.set_xlim(x_min - 4, x_max)
+    ax.set_ylim(-0.2, n * offset_step)
+    ax.set_xlabel("Velocity (mph)", fontsize=8)
+    ax.set_yticks([])
+    ax.set_title("Pitch Velocity Distribution", fontsize=11, fontweight="bold", pad=6)
+    ax.tick_params(axis="x", labelsize=7)
+    for spine in ["top", "right", "left"]:
+        ax.spines[spine].set_visible(False)
+    ax.grid(True, axis="x", alpha=0.15, linewidth=0.4)
 
-    ax_usage = fig.add_subplot(gs[2, 2]); ax_usage.set_facecolor(PANEL_COLOR)
-    lhb_data = p[p["BatterSide"] == "Left"]
-    rhb_data = p[p["BatterSide"] == "Right"]
-    lhb_total = len(lhb_data); rhb_total = len(rhb_data)
-    bar_pts = sorted(pts, key=lambda x: p[p["PitchType"] == x]["RelSpeed"].median()
-                     if not p[p["PitchType"] == x]["RelSpeed"].dropna().empty else 0, reverse=True)
-    y_pos = np.arange(len(bar_pts)); bar_h = 0.35
-    for i, pt in enumerate(bar_pts):
-        lhb_pct = len(lhb_data[lhb_data["PitchType"] == pt]) / lhb_total * 100 if lhb_total > 0 else 0
-        rhb_pct = len(rhb_data[rhb_data["PitchType"] == pt]) / rhb_total * 100 if rhb_total > 0 else 0
-        ax_usage.barh(i + bar_h / 2, -lhb_pct, bar_h, color=pc(pt), alpha=0.8, edgecolor="black", lw=0.3)
-        ax_usage.barh(i - bar_h / 2, rhb_pct, bar_h, color=pc(pt), alpha=0.8, edgecolor="black", lw=0.3)
-        if lhb_pct > 2:
-            ax_usage.text(-lhb_pct / 2, i + bar_h / 2, f"{lhb_pct:.1f}%", ha="center", va="center",
-                         fontsize=10, fontweight="bold", color="white")
-        if rhb_pct > 2:
-            ax_usage.text(rhb_pct / 2, i - bar_h / 2, f"{rhb_pct:.1f}%", ha="center", va="center",
-                         fontsize=10, fontweight="bold", color="white")
-    ax_usage.set_yticks(y_pos)
-    ax_usage.set_yticklabels(bar_pts, fontsize=12, fontfamily="monospace")
-    ax_usage.axvline(0, color="black", lw=1)
-    max_pct = max(60, max(
-        [len(lhb_data[lhb_data["PitchType"] == pt]) / max(lhb_total, 1) * 100 for pt in bar_pts] +
-        [len(rhb_data[rhb_data["PitchType"] == pt]) / max(rhb_total, 1) * 100 for pt in bar_pts]
-    ) + 10)
-    ax_usage.set_xlim(-max_pct, max_pct)
-    ticks = ax_usage.get_xticks()
-    ax_usage.set_xticklabels([f"{abs(t):.0f}%" for t in ticks], fontsize=10)
-    ax_usage.set_title("Pitch Usage", fontsize=14, fontweight="bold", color=TEXT_COLOR, pad=6)
-    ax_usage.text(-max_pct * 0.5, len(bar_pts) + 0.3, f"vs LHB ({lhb_total})", ha="center", fontsize=12,
-                 color=MUTED_TEXT, fontweight="bold")
-    ax_usage.text(max_pct * 0.5, len(bar_pts) + 0.3, f"vs RHB ({rhb_total})", ha="center", fontsize=12,
-                 color=MUTED_TEXT, fontweight="bold")
-    ax_usage.tick_params(labelsize=6, colors=MUTED_TEXT)
-    for sp in ax_usage.spines.values(): sp.set_color(GRID_COLOR)
+def _ss_plot_breaks(ax, sm, pitch_order):
+    """One large dot per pitch type at the avg movement (Munn style)."""
+    for pt in pitch_order:
+        sub = sm[sm["PitchType"] == pt]
+        if len(sub) == 0:
+            continue
+        ax.scatter(sub["HorzBreak"].mean(), sub["InducedVertBreak"].mean(),
+                   color=pc(pt), s=420, alpha=0.92,
+                   edgecolors="white", linewidths=1.6, zorder=3,
+                   label=SS_PITCH_DISPLAY.get(pt, pt))
 
-    ax_t = fig.add_subplot(gs[3, :]); ax_t.set_facecolor(BG_COLOR); ax_t.axis("off")
-    trows = []
-    grade_cells = {}
-    for ri, pt in enumerate(pts):
-        s = p[p["PitchType"] == pt]; n = len(s)
-        s_iz = in_zone(s); _sw = s["PitchCall"].isin(SWING_CALLS)
-        _wh = s["PitchCall"] == "StrikeSwinging"; _ooz = ~s_iz
-        _ooz_sw = (_sw & _ooz).sum(); _ooz_n = _ooz.sum()
-        _iz_sw = (_sw & s_iz).sum(); _iz_wh = (_wh & s_iz).sum()
-        iz_whiff_str = f"{_iz_wh / _iz_sw * 100:.1f}%" if _iz_sw else "—"
-        _sw_ct = _sw.sum()
-        whiff_val = _wh.sum() / _sw_ct * 100 if _sw_ct else None
-        whiff_str = f"{whiff_val:.1f}%" if whiff_val is not None else "—"
-        chase_val = _ooz_sw / _ooz_n * 100 if _ooz_n else None
-        chase_str = f"{chase_val:.1f}%" if chase_val is not None else "—"
-        xw = s["xwOBA"].dropna()
-        xwoba_val = xw.mean() if not xw.empty else None
-        xwoba_str = f"{xwoba_val:.3f}" if xwoba_val is not None else "—"
-        avg_velo_raw = s["RelSpeed"].dropna()
-        avg_velo_val = avg_velo_raw.mean() if not avg_velo_raw.empty else None
-        zone_val = s_iz.sum() / n * 100 if n else None
-        zone_str = f"{zone_val:.1f}%" if zone_val is not None else "—"
-        stuff_val = score_stuff_plus(s, pt, p)
-        stuff_str = f"{stuff_val:.0f}" if stuff_val is not None else "—"
-        trows.append([pt, n, f"{n / N * 100:.1f}%", stuff_str,
-                      fmt(s["RelSpeed"]), fmt(s["RelSpeed"], "max"),
-                      fmt(s["SpinRate"], d=0),
-                      fmt(s["InducedVertBreak"]), fmt(s["HorzBreak"]),
-                      fmt(s["Extension"]), fmt(s["RelHeight"]), fmt(s["RelSide"]),
-                      fmt(s["VertApprAngle"]),
-                      xwoba_str, zone_str, whiff_str, chase_str, iz_whiff_str])
+    ax.axhline(0, color="#8B7355", linewidth=0.8, linestyle="--", alpha=0.7)
+    ax.axvline(0, color="#8B7355", linewidth=0.8, linestyle="--", alpha=0.7)
+    ax.set_xlim(-25, 25)
+    ax.set_ylim(-25, 25)
+    ax.set_xlabel("Horizontal Break (in)", fontsize=8)
+    ax.set_ylabel("Induced Vertical Break (in)", fontsize=8)
+    ax.set_title("Pitch Breaks", fontsize=11, fontweight="bold", pad=6)
+    ax.tick_params(axis="both", labelsize=8, colors="#222")
+    ax.grid(True, alpha=0.18, linewidth=0.4)
+    ax.set_aspect("equal")
+    ax.text(-23, -22, "\u2190 Glove Side", fontsize=7, alpha=0.7,
+            bbox=dict(boxstyle="round,pad=0.25", facecolor="white",
+                      edgecolor="#aaa", linewidth=0.4))
+    ax.text(11, -22, "Arm Side \u2192", fontsize=7, alpha=0.7,
+            bbox=dict(boxstyle="round,pad=0.25", facecolor="white",
+                      edgecolor="#aaa", linewidth=0.4))
 
-        data_row = ri + 1
-        if avg_velo_val is not None:
-            grade_cells[(data_row, 3)] = (pt, "velo", avg_velo_val, True)
-        if xwoba_val is not None:
-            grade_cells[(data_row, 12)] = (pt, "xwoba", xwoba_val, False)
-        if zone_val is not None:
-            grade_cells[(data_row, 13)] = (pt, "zone_pct", zone_val, True)
-        if whiff_val is not None:
-            grade_cells[(data_row, 14)] = (pt, "whiff_pct", whiff_val, True)
-        if chase_val is not None:
-            grade_cells[(data_row, 15)] = (pt, "chase_pct", chase_val, True)
+def _ss_plot_usage(ax, sm, pitch_order):
+    """Back-to-back horizontal bars — vs LHH | vs RHH (Munn style)."""
+    lhh = sm[sm["BatterSide"] == "Left"]
+    rhh = sm[sm["BatterSide"] == "Right"]
+    pitches_present = [p for p in pitch_order if (sm["PitchType"] == p).any()]
+    y_positions = np.arange(len(pitches_present))[::-1]
 
-    all_sw_ct = sw.sum()
-    all_whiff = f"{wh.sum() / all_sw_ct * 100:.1f}%" if all_sw_ct else "0%"
-    all_xw = p["xwOBA"].dropna()
-    all_xwoba = f"{all_xw.mean():.3f}" if not all_xw.empty else "—"
-    trows.append(["All", N, "100%", "—", "—", "—", "—", "—", "—",
-                  fmt(p["Extension"]), "—", "—", "—",
-                  all_xwoba, f"{zpct}%", all_whiff, f"{cpct}%", f"{izwp}%"])
+    bar_h = 0.7
+    for i, pt in enumerate(pitches_present):
+        y = y_positions[i]
+        color = pc(pt)
+        lp = 100 * (lhh["PitchType"] == pt).sum() / len(lhh) if len(lhh) else 0
+        rp = 100 * (rhh["PitchType"] == pt).sum() / len(rhh) if len(rhh) else 0
+        ax.barh(y, -lp, height=bar_h, color=color, edgecolor="white", linewidth=0.6)
+        ax.barh(y,  rp, height=bar_h, color=color, edgecolor="white", linewidth=0.6)
+        if lp > 0:
+            ax.text(-lp - 2, y, f"{lp:.1f}%", va="center", ha="right",
+                    fontsize=7, color="#333")
+        if rp > 0:
+            ax.text(rp + 2, y, f"{rp:.1f}%", va="center", ha="left",
+                    fontsize=7, color="#333")
 
-    cols = ["Count", "Usage%", "Stuff+", "Avg\nVelo", "Max\nVelo", "Avg\nSpin",
-            "IVB", "HB", "Ext", "RelH", "RelS", "VAA",
-            "xwOBA", "Zone%", "Whiff%", "Chase%", "IZ\nWhiff%"]
-    tbl = ax_t.table(cellText=[r[1:] for r in trows], rowLabels=[r[0] for r in trows],
-                     colLabels=cols, loc="center", cellLoc="center")
-    tbl.auto_set_font_size(False)
-    tbl.set_fontsize(12)
-    tbl.scale(1, 2.8)
+    ax.axvline(0, color="black", linewidth=0.8)
+    ax.set_xlim(-100, 100)
+    ax.set_ylim(-0.7, len(pitches_present) + 0.3)
+    ax.set_yticks([])
+    ax.set_xticks([-100, -75, -50, -25, 0, 25, 50, 75, 100])
+    ax.set_xticklabels(["100%", "75%", "50%", "25%", "0%", "25%", "50%", "75%", "100%"],
+                       fontsize=7)
+    ax.set_xlabel("Usage (%)", fontsize=8)
+    ax.set_title("Pitch Usage", fontsize=11, fontweight="bold", pad=18)
+    ax.text(-50, len(pitches_present) - 0.15, "vs LHH", ha="center", va="bottom",
+            fontsize=8, fontweight="bold", color="#555")
+    ax.text(50, len(pitches_present) - 0.15, "vs RHH", ha="center", va="bottom",
+            fontsize=8, fontweight="bold", color="#555")
+    for spine in ["top", "right", "left"]:
+        ax.spines[spine].set_visible(False)
+    ax.grid(True, axis="x", alpha=0.15, linewidth=0.4)
 
-    for (row, col), cell in tbl.get_celld().items():
-        cell.set_edgecolor(GRID_COLOR); cell.set_linewidth(0.6)
-        if row == 0:
-            cell.set_facecolor("#1E1E2E")
-            cell.set_text_props(fontweight="bold", color="white", fontfamily="monospace", fontsize=12)
-        elif col == -1:
-            pitch_name = cell.get_text().get_text()
-            if pitch_name == "All":
-                cell.set_facecolor("#E8E8E8")
-                cell.set_text_props(fontweight="bold", color=TEXT_COLOR, fontfamily="monospace", fontsize=13)
+def _ss_build_table(sm, pitch_order):
+    rows = []
+    total = len(sm)
+    for pt in pitch_order:
+        sub = sm[sm["PitchType"] == pt]
+        if len(sub) == 0:
+            continue
+        cnt = len(sub)
+        iz_full = in_zone(sub)
+        oz_full = sub[~iz_full]
+        chase_pct = 100 * _ss_is_swing(oz_full).sum() / len(oz_full) if len(oz_full) > 0 else 0.0
+        swings_full = _ss_is_swing(sub)
+        n_sw = swings_full.sum()
+        whiff_pct = 100 * (sub[swings_full]["PitchCall"] == "StrikeSwinging").sum() / n_sw if n_sw > 0 else 0.0
+        zone_pct = 100 * iz_full.sum() / cnt if cnt else np.nan
+        rows.append({
+            "Pitch":    SS_PITCH_DISPLAY.get(pt, pt),
+            "Color":    pc(pt),
+            "Count":    cnt,
+            "Pitch%":   100 * cnt / total,
+            "Velocity": sub["RelSpeed"].mean(),
+            "Max":      sub["RelSpeed"].max(),
+            "iVB":      sub["InducedVertBreak"].mean(),
+            "HB":       sub["HorzBreak"].mean(),
+            "Spin":     sub["SpinRate"].mean(),
+            "VAA":      sub["VertApprAngle"].mean(),
+            "vRel":     sub["RelHeight"].mean(),
+            "hRel":     sub["RelSide"].mean(),
+            "Ext":      sub["Extension"].mean(),
+            "Zone%":    zone_pct,
+            "Chase%":   chase_pct,
+            "Whiff%":   whiff_pct,
+        })
+
+    iz_all = in_zone(sm)
+    oz_all = sm[~iz_all]
+    chase_all = 100 * _ss_is_swing(oz_all).sum() / len(oz_all) if len(oz_all) > 0 else 0.0
+    swings_all = _ss_is_swing(sm)
+    n_sw_all = swings_all.sum()
+    whiff_all = 100 * (sm[swings_all]["PitchCall"] == "StrikeSwinging").sum() / n_sw_all if n_sw_all > 0 else 0.0
+    rows.append({
+        "Pitch": "All", "Color": "#FFFFFF", "Count": total, "Pitch%": 100.0,
+        "Velocity": np.nan, "Max": np.nan, "iVB": np.nan, "HB": np.nan,
+        "Spin": np.nan, "VAA": np.nan, "vRel": np.nan, "hRel": np.nan,
+        "Ext": sm["Extension"].mean(),
+        "Zone%": 100 * iz_all.sum() / total if total else np.nan,
+        "Chase%": chase_all, "Whiff%": whiff_all,
+    })
+    return pd.DataFrame(rows)
+
+def _ss_draw_table(ax, df):
+    ax.axis("off")
+    cols = ["Pitch Name", "Count", "Pitch%", "Velocity", "Max", "iVB", "HB", "Spin",
+            "VAA", "vRel", "hRel", "Ext.", "Zone%", "Chase%", "Whiff%"]
+    df_keys = ["Pitch", "Count", "Pitch%", "Velocity", "Max", "iVB", "HB", "Spin",
+               "VAA", "vRel", "hRel", "Ext", "Zone%", "Chase%", "Whiff%"]
+    fmts = {
+        "Count":    lambda v: f"{int(v)}",
+        "Pitch%":   lambda v: f"{v:.1f}%",
+        "Velocity": lambda v: f"{v:.1f}" if pd.notna(v) else "—",
+        "Max":      lambda v: f"{v:.1f}" if pd.notna(v) else "—",
+        "iVB":      lambda v: f"{v:.1f}" if pd.notna(v) else "—",
+        "HB":       lambda v: f"{v:.1f}" if pd.notna(v) else "—",
+        "Spin":     lambda v: f"{v:.0f}" if pd.notna(v) else "—",
+        "VAA":      lambda v: f"{v:.1f}" if pd.notna(v) else "—",
+        "vRel":     lambda v: f"{v:.1f}" if pd.notna(v) else "—",
+        "hRel":     lambda v: f"{v:.1f}" if pd.notna(v) else "—",
+        "Ext":      lambda v: f"{v:.1f}" if pd.notna(v) else "—",
+        "Zone%":    lambda v: f"{v:.1f}%" if pd.notna(v) else "—",
+        "Chase%":   lambda v: f"{v:.1f}%" if pd.notna(v) else "—",
+        "Whiff%":   lambda v: f"{v:.1f}%" if pd.notna(v) else "—",
+    }
+
+    cell_text, cell_colors = [], []
+    for _, row in df.iterrows():
+        line, clrs = [], []
+        for c, kk in zip(cols, df_keys):
+            if kk == "Pitch":
+                line.append(row["Pitch"])
+                clrs.append(row["Color"] if row["Pitch"] != "All" else "#FFFFFF")
             else:
-                cell.set_facecolor(pc(pitch_name))
-                cell.set_text_props(fontweight="bold", color="white", fontfamily="monospace", fontsize=13)
-        else:
-            graded = False
-            if (row, col) in grade_cells and row <= len(pts):
-                pt_name, stat_name, raw_val, higher_better = grade_cells[(row, col)]
-                gc = grade_color(pt_name, stat_name, raw_val, higher_better)
-                if gc is not None:
-                    cell.set_facecolor(gc)
-                    cell.set_text_props(color=TEXT_COLOR, fontfamily="monospace", fontweight="bold")
-                    graded = True
-            if not graded:
-                if row == len(trows):
-                    cell.set_facecolor("#F0F0F0")
-                    cell.set_text_props(color=TEXT_COLOR, fontweight="bold", fontfamily="monospace")
-                elif row % 2 == 0:
-                    cell.set_facecolor("#F7F8FA")
-                    cell.set_text_props(color=TEXT_COLOR, fontfamily="monospace")
-                else:
-                    cell.set_facecolor("#FFFFFF")
-                    cell.set_text_props(color=TEXT_COLOR, fontfamily="monospace")
+                v = row[kk]
+                line.append(fmts[kk](v) if kk in fmts else str(v))
+                clrs.append("#FFFFFF")
+        cell_text.append(line)
+        cell_colors.append(clrs)
+
+    header_colors = ["#2C2C2C"] * len(cols)
+    table = ax.table(cellText=cell_text, colLabels=cols,
+                     cellColours=cell_colors, colColours=header_colors,
+                     cellLoc="center", loc="center")
+    table.auto_set_font_size(False)
+    table.set_fontsize(8)
+    table.scale(1, 1.55)
+
+    for j in range(len(cols)):
+        cell = table[(0, j)]
+        cell.set_text_props(color="white", fontweight="bold")
+        cell.set_edgecolor("#1a1a1a"); cell.set_linewidth(0.5)
+
+    n_rows = len(df)
+    for i in range(1, n_rows + 1):
+        for j in range(len(cols)):
+            cell = table[(i, j)]
+            cell.set_edgecolor("#cccccc"); cell.set_linewidth(0.4)
+            if j == 0:
+                # White bold text on colored pitch cells; dark on the All row
+                is_all = (df.iloc[i - 1]["Pitch"] == "All")
+                cell.set_text_props(fontweight="bold",
+                                    color="#1a1a1a" if is_all else "white")
+
+    widths = [1.5, 0.65, 0.75, 0.95, 0.7, 0.65, 0.65, 0.75, 0.65, 0.65, 0.65,
+              0.65, 0.8, 0.85, 0.85]
+    total_w = sum(widths)
+    for j, w in enumerate(widths):
+        for i in range(n_rows + 1):
+            table[(i, j)].set_width(w / total_w)
+
+def generate_season_summary(pitcher_name, outings, date_from, date_to):
+    """
+    One-page Munn-style season pitching summary:
+    header / velocity ridges / avg-movement breaks / usage bars / pitch table.
+    """
+    all_dfs = [p_df.copy() for p_df, gdate, opp in outings]
+    if not all_dfs:
+        return None
+    sm = pd.concat(all_dfs, ignore_index=True)
+    if len(sm) == 0:
+        return None
+
+    # Order pitch types fastest -> slowest (matches the reference layout)
+    pts_present = [pt for pt in sm["PitchType"].dropna().unique() if pt]
+    pitch_order = sorted(
+        pts_present,
+        key=lambda x: sm.loc[sm["PitchType"] == x, "RelSpeed"].median()
+        if not sm.loc[sm["PitchType"] == x, "RelSpeed"].dropna().empty else 0,
+        reverse=True,
+    )
+
+    hand = _hand_label(sm)
+    display = _display_name(pitcher_name)
+    table_df = _ss_build_table(sm, pitch_order)
+
+    fig = plt.figure(figsize=(11, 8.5), facecolor="white")
+    gs = GridSpec(nrows=3, ncols=3, figure=fig,
+                  height_ratios=[0.9, 3.0, 2.5],
+                  width_ratios=[1, 1, 1],
+                  left=0.045, right=0.965, top=0.96, bottom=0.045,
+                  hspace=0.45, wspace=0.30)
+
+    ax_hdr = fig.add_subplot(gs[0, :]); ax_hdr.axis("off")
+    ax_hdr.text(0.5, 0.92, display, ha="center", va="top",
+                fontsize=22, fontweight="bold", color="#1a1a1a")
+    sub_bits = [b for b in [hand, f"{len(outings)} outings"] if b]
+    ax_hdr.text(0.5, 0.58, "  \u2022  ".join(sub_bits), ha="center", va="top",
+                fontsize=10, color="#555")
+    ax_hdr.text(0.5, 0.38, "Season Pitching Summary", ha="center", va="top",
+                fontsize=13, fontweight="bold", color="#1a1a1a")
+    try:
+        season_label = f"{date_from:%b %d} \u2013 {date_to:%b %d, %Y}"
+    except Exception:
+        season_label = f"{date_from} \u2013 {date_to}"
+    ax_hdr.text(0.5, 0.18, season_label, ha="center", va="top",
+                fontsize=9, style="italic", color="#777")
+
+    _ss_plot_velo_distribution(fig.add_subplot(gs[1, 0]), sm, pitch_order)
+    _ss_plot_breaks(fig.add_subplot(gs[1, 1]), sm, pitch_order)
+    _ss_plot_usage(fig.add_subplot(gs[1, 2]), sm, pitch_order)
+    _ss_draw_table(fig.add_subplot(gs[2, :]), table_df)
 
     return fig
 
