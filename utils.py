@@ -533,6 +533,15 @@ def _label_cluster(cluster_stats, fb_stats, is_primary_fb):
     if hb <= -10 and ivb > -5:
         return "Sweeper"
 
+    # ── 4b. SECONDARY FASTBALL: near-fastball velo with arm-side run ──
+    # Pitchers with two fastball shapes (4-seam + sinker, two-seam variants).
+    # Without this rule a second hard arm-side cluster falls through every
+    # other check and lands in "Other".
+    if velo >= fb_velo - 5 and hb >= 5:
+        if ivb < 10 and hb >= ivb:
+            return "Sinker"
+        return "Fastball"
+
     # ── 5. CHANGEUP: 7+ mph slower than FB, arm-side movement matching FB ──
     if velo <= fb_velo - 7:
         if fb_hb > 3:
@@ -557,8 +566,11 @@ def _label_cluster(cluster_stats, fb_stats, is_primary_fb):
         return "Curveball"
     if hb <= -3:
         return "Slider"
-    if hb >= 8 and velo < fb_velo - 3:
-        return "ChangeUp"
+    if hb >= 3:
+        # Arm-side run: slower → ChangeUp, near FB velo → Sinker/Fastball
+        if velo <= fb_velo - 5:
+            return "ChangeUp"
+        return "Sinker" if ivb < 10 else "Fastball"
     return "Other"
 
 def _cluster_raw_stats(clustered, clusters):
@@ -604,7 +616,7 @@ def _infer_hand_from_clusters(pdf, stats, fb_cluster):
 
     return _infer_hand_for_pitcher(pdf)
 
-def classify_pitches_for_pitcher(pdf):
+def _classify_single_arsenal(pdf):
     """
     Run the full rule-based classifier on one pitcher's pitches.
     Pipeline:
@@ -739,6 +751,51 @@ def classify_pitches_for_pitcher(pdf):
     out["PitchType"] = new_labels.where(new_labels.notna(), out.get("PitchType", "Other"))
     out["PitchType"] = out["PitchType"].replace(PT_NORMALIZE)
     return out
+
+def classify_pitches_for_pitcher(pdf):
+    """
+    Entry point for per-pitcher classification, with a FAIL-SAFE for bad
+    pitch tracking: if an operator tags another pitcher's pitches under this
+    pitcher's name, the data contains TWO release points (often on opposite
+    sides for an L/R mix). Treating that as one arsenal flips the handedness
+    mirror and produces nonsense ("a lefty throwing a 93 mph sweeper").
+
+    Detection: RelSide is bimodal — both positive and negative release sides
+    present with meaningful volume AND well-separated medians. When detected,
+    each release-side group is classified independently as its own arsenal.
+    """
+    pdf = pdf.copy()
+    if len(pdf) < 5:
+        return pdf
+
+    rs = pd.to_numeric(pdf.get("RelSide"), errors="coerce")
+    if rs is not None and rs.notna().sum() >= 10:
+        pos_mask = rs > 0.25
+        neg_mask = rs < -0.25
+        n_pos, n_neg = int(pos_mask.sum()), int(neg_mask.sum())
+        n_sided = n_pos + n_neg
+        if (n_pos >= 5 and n_neg >= 5 and n_sided > 0
+                and min(n_pos, n_neg) >= 0.08 * n_sided):
+            sep = float(rs[pos_mask].median() - rs[neg_mask].median())
+            if sep >= 1.0:
+                # Contaminated outing: classify each release side separately
+                parts = []
+                grp_pos = pdf[pos_mask.fillna(False)]
+                grp_neg = pdf[neg_mask.fillna(False)]
+                rest    = pdf[~(pos_mask.fillna(False) | neg_mask.fillna(False))]
+                for grp in (grp_pos, grp_neg):
+                    if len(grp) >= 5:
+                        parts.append(_classify_single_arsenal(grp))
+                    else:
+                        parts.append(grp)
+                if len(rest) > 0:
+                    parts.append(rest)
+                out = pd.concat(parts).loc[pdf.index]
+                if "PitchType" in out.columns:
+                    out["PitchType"] = out["PitchType"].replace(PT_NORMALIZE)
+                return out
+
+    return _classify_single_arsenal(pdf)
 
 def auto_correct_pitch_types(pitcher_df):
     """
@@ -893,7 +950,7 @@ def _prep_df(df):
     return df
 
 @st.cache_data(ttl=3600)
-def load_index(_cache_version="v11"):
+def load_index(_cache_version="v12"):
     """Load lightweight game index — used for sidebar dropdowns. Tiny and fast.
     _cache_version: bump this string to bust the Streamlit Cloud cache."""
     # Support both new index.parquet and legacy pitches.parquet
@@ -924,7 +981,7 @@ def _to_date(x):
         return x
 
 @st.cache_data(ttl=300)
-def load_team_data(team_name, date_from, date_to, _cache_version="v7"):
+def load_team_data(team_name, date_from, date_to, _cache_version="v8"):
     """
     Load only the date files where the selected team played in the date range.
     Returns ~5-50MB instead of the full 800MB+ season dataset.
