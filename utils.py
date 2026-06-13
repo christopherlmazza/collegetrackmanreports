@@ -453,49 +453,44 @@ def in_zone(s):
 # rules work for both.
 
 def _infer_hand_for_pitcher(pdf):
-    """LHP if median RelSide < 0, else RHP. Returns 'L' or 'R'."""
+    """LHP if median RelSide < 0, else RHP. Returns 'L' or 'R'.
+    Used only as a FALLBACK — primary handedness signal is the fastball's
+    break direction (see classify_pitches_for_pitcher)."""
     rs = pd.to_numeric(pdf.get("RelSide"), errors="coerce").dropna()
     if len(rs) == 0:
         return "R"
     return "L" if rs.median() < 0 else "R"
 
+_CLUSTER_FEATS  = ["RelSpeed", "InducedVertBreak", "HorzBreak", "SpinRate"]
+_CLUSTER_SCALES = np.array([2.0, 4.0, 4.0, 250.0])  # velo, ivb, hb, spin
+
 def _cluster_pitcher_pitches(pdf, min_cluster_size=5):
     """
-    Cluster a single pitcher's pitches in (velo, IVB, HB_mirrored, spin) space.
-    Uses DBSCAN for shape-flexible clusters (pitchers don't all have N pitches).
-    Returns the input df with a new '_cluster' int column. -1 = noise/uncluster.
+    Cluster a single pitcher's pitches in (velo, IVB, raw HB, spin) space.
+    NOTE: we cluster on RAW HorzBreak — handedness mirroring just flips one
+    axis and doesn't change which pitches group together, so hand is inferred
+    AFTER clustering (from the primary fastball's break direction, which is a
+    far more reliable signal than RelSide alone).
+    Returns the input df with a new '_cluster' int column. -1 = noise.
     """
-    feats = ["RelSpeed", "InducedVertBreak", "HorzBreak", "SpinRate"]
     pdf = pdf.copy()
-    pdf["_hb_mirror"] = pdf["HorzBreak"]
-    is_lhp = _infer_hand_for_pitcher(pdf) == "L"
-    if is_lhp:
-        pdf["_hb_mirror"] = -pdf["_hb_mirror"]
-
-    valid = pdf[feats].notna().all(axis=1) & pdf["_hb_mirror"].notna()
+    valid = pdf[_CLUSTER_FEATS].notna().all(axis=1)
     pdf["_cluster"] = -1
     if valid.sum() < min_cluster_size:
-        return pdf, is_lhp
+        return pdf
 
-    X = pdf.loc[valid, ["RelSpeed", "InducedVertBreak", "_hb_mirror", "SpinRate"]].values
-    # Normalize: velo and spin have very different scales than IVB/HB.
-    # Use scale factors that roughly equalize their importance.
-    scales = np.array([2.0, 4.0, 4.0, 250.0])  # velo, ivb, hb, spin
-    Xn = X / scales
+    X = pdf.loc[valid, _CLUSTER_FEATS].values
+    Xn = X / _CLUSTER_SCALES
 
     try:
         from sklearn.cluster import DBSCAN
-        # Moderately tight eps so fastball/changeup mixes (similar movement,
-        # 5-10 mph velo gap) get separated into different clusters. The
-        # post-clustering merge logic handles any over-splitting downstream
-        # by collapsing same-labeled clusters and re-labeling slower duplicates.
         eps = 1.0
         min_samp = max(3, min(5, int(valid.sum() * 0.03)))
         labels = DBSCAN(eps=eps, min_samples=min_samp).fit_predict(Xn)
         pdf.loc[valid, "_cluster"] = labels
     except Exception:
         pdf["_cluster"] = -1
-    return pdf, is_lhp
+    return pdf
 
 def _label_cluster(cluster_stats, fb_stats, is_primary_fb):
     """
@@ -503,110 +498,132 @@ def _label_cluster(cluster_stats, fb_stats, is_primary_fb):
     cluster_stats: dict with 'velo','ivb','hb_mirror','spin' (means for cluster)
     fb_stats: same, for the primary fastball cluster (the hardest cluster)
     is_primary_fb: True if this cluster IS the primary fastball
-    Returns one of: Fastball, Sinker, Cutter, Changeup, Splitter,
+    hb_mirror convention: positive = ARM side, negative = GLOVE side
+    (already corrected for handedness before this is called).
+    Returns one of: Fastball, Sinker, Cutter, ChangeUp, Splitter,
                     Curveball, Slider, Sweeper, Other
     """
     velo  = cluster_stats["velo"]
     ivb   = cluster_stats["ivb"]
-    hb    = cluster_stats["hb_mirror"]   # already mirrored: + = arm side
+    hb    = cluster_stats["hb_mirror"]
     spin  = cluster_stats["spin"]
     fb_velo = fb_stats["velo"]
     fb_hb   = fb_stats["hb_mirror"]
-    fb_ivb  = fb_stats["ivb"]
 
     # ── 1. PRIMARY FASTBALL CLUSTER LABELING ──
     if is_primary_fb:
-        # Sinker: low ride AND arm-side run >= ride (or sub-10 IVB w/ matching HB)
+        # Sinker: low ride AND arm-side run >= ride
         if ivb < 10 and hb >= ivb:
             return "Sinker"
         # Cutter (as primary): ride 5+, HB within ±5
         if ivb >= 5 and -5 <= hb <= 5:
             return "Cutter"
-        # Fastball: default for hardest cluster
         return "Fastball"
 
     # ── 2. SPLITTER: low spin + slower ──
     if spin < 1500 and velo < fb_velo - 5:
         return "Splitter"
 
-    # ── 3. CURVEBALL: real depth (5+ inches of drop). HB direction matters but
-    # threshold is loose — a curveball needs at least slight glove-side break
-    # (HB ≤ -2) since a deep pitch with arm-side run would be a splitter/sinker
-    # (handled above).
+    # ── 3. CURVEBALL: real depth (5+ inches of drop) and at least slight
+    # glove-side break.
     if ivb <= -5 and hb <= -2:
         return "Curveball"
 
-    # ── 4. SWEEPER: big glove-side sweep WITHOUT significant depth ──
-    # Sweepers sit near IVB = 0 (slight ride or slight drop, but not curveball-deep).
-    # If a pitch has 10+ sweep AND 5+ depth, the Curveball rule above caught it.
-    if fb_hb > 3:
-        # Standard pitcher: FB has arm-side run, sweeper goes glove-side
-        if hb <= -10 and ivb > -5:
-            return "Sweeper"
-    else:
-        # Cutter-primary pitcher: 10+ inches of glove-side sweep, minimal depth
-        if hb <= -10 and ivb > -5:
-            return "Sweeper"
+    # ── 4. SWEEPER: big glove-side sweep WITHOUT curveball depth ──
+    if hb <= -10 and ivb > -5:
+        return "Sweeper"
 
-    # ── 5. CHANGEUP: 7+ mph slower than FB, arm-side movement matching FB direction ──
-    # "Arm-side run similar to primary fastball" — if FB has arm-side HB, CH should too.
-    # If FB is cutter-like (low HB), CH just needs arm-side run > 5.
+    # ── 5. CHANGEUP: 7+ mph slower than FB, arm-side movement matching FB ──
     if velo <= fb_velo - 7:
         if fb_hb > 3:
-            # FB has arm-side run — CH should match direction (HB > 0, ideally close to fb_hb)
             if hb > 3:
                 return "ChangeUp"
         else:
-            # FB is cutter-ish — any arm-side movement is changeup
             if hb > 5:
                 return "ChangeUp"
 
-    # ── 6. CUTTER: 5+ IVB, HB between -5 and +5, faster than slider ──
+    # ── 6. CUTTER: 5+ IVB, HB between -5 and +5, near fastball velo ──
     if ivb >= 5 and -5 <= hb <= 5 and velo >= fb_velo - 8:
         return "Cutter"
 
-    # ── 7. SLIDER: minimal-movement breaking ball sitting around (0,0) on
-    # the pitch plot. Includes gyro sliders with slight depth or sweep.
-    # Covers: HB between -10 and 0, IVB between -5 and +5.
-    # Anything with deeper depth OR more sweep falls through to other categories
-    # (Curveball above needs depth+sweep; Sweeper above needs ≥10 sweep).
+    # ── 7. SLIDER: minimal-movement breaking ball around (0,0) ──
     if -10 < hb <= 0 and -5 < ivb < 5:
         return "Slider"
-    # Also: any glove-side break with no depth is still a slider
     if hb <= -3 and ivb > -5:
         return "Slider"
 
-    # ── 8. Catch-all — make a best-guess based on shape rather than "Other".
-    # By this point the pitch doesn't fit any tight rule but it IS a real pitch.
-    # Use coarse direction + depth to pick the closest pitch type.
+    # ── 8. Catch-all — best-guess by shape rather than "Other" ──
     if ivb <= -3:
-        # Has some drop — call it a Curveball
         return "Curveball"
     if hb <= -3:
-        # Glove-side break with no significant depth — Slider
         return "Slider"
     if hb >= 8 and velo < fb_velo - 3:
-        # Arm-side run, slower than fastball — Changeup
         return "ChangeUp"
     return "Other"
+
+def _cluster_raw_stats(clustered, clusters):
+    """Mean (velo, ivb, raw hb, spin) + n for each cluster id."""
+    stats = {}
+    for c in clusters:
+        sub = clustered[clustered["_cluster"] == c]
+        stats[c] = {
+            "velo":   float(sub["RelSpeed"].mean()),
+            "ivb":    float(sub["InducedVertBreak"].mean()),
+            "hb_raw": float(sub["HorzBreak"].mean()),
+            "spin":   float(sub["SpinRate"].mean()),
+            "n":      int(len(sub)),
+        }
+    return stats
+
+def _infer_hand_from_clusters(pdf, stats, fb_cluster):
+    """
+    Robust handedness inference. RelSide alone misfires for some pitchers,
+    which flips the HB mirror and turns sliders into 'changeups' (and vice
+    versa). The fastball's run direction is near-deterministic:
+      RHP fastballs/sinkers run ARM side = positive raw HorzBreak
+      LHP fastballs/sinkers run ARM side = negative raw HorzBreak
+    Priority:
+      1. Primary fastball raw HB sign (if |HB| >= 4 — i.e. not a cutter)
+      2. Any other hard cluster (within 4 mph of FB) with |HB| >= 6
+      3. RelSide median (fallback)
+    """
+    fb_hb_raw = stats[fb_cluster]["hb_raw"]
+    if abs(fb_hb_raw) >= 4:
+        return "R" if fb_hb_raw > 0 else "L"
+
+    # FB is cutter-ish — look for another hard pitch with clear run
+    fb_velo = stats[fb_cluster]["velo"]
+    candidates = [
+        (c, s) for c, s in stats.items()
+        if c != fb_cluster and s["velo"] >= fb_velo - 4 and abs(s["hb_raw"]) >= 6
+    ]
+    if candidates:
+        # Largest such cluster wins
+        c, s = max(candidates, key=lambda kv: kv[1]["n"])
+        return "R" if s["hb_raw"] > 0 else "L"
+
+    return _infer_hand_for_pitcher(pdf)
 
 def classify_pitches_for_pitcher(pdf):
     """
     Run the full rule-based classifier on one pitcher's pitches.
+    Pipeline:
+      1. DBSCAN cluster on (velo, ivb, raw hb, spin)
+      2. Velocity-split any cluster spanning >6 mph (fastball+changeup mixes)
+      3. Assign DBSCAN noise pitches to their nearest cluster
+      4. Absorb tiny clusters (below min usage) into their nearest cluster —
+         a handful of outlier pitches should NOT become their own pitch type
+      5. Infer handedness from the primary fastball's break direction
+      6. Label clusters relative to the primary fastball (mirrored HB)
     Returns a new df with the 'PitchType' column overwritten with our labels.
-    Pitches that couldn't be clustered keep whatever PitchType they came in with
-    (which would be the original Auto/Tagged value from resolve_pt).
     """
     pdf = pdf.copy()
     if len(pdf) < 5:
         return pdf
 
-    clustered, is_lhp = _cluster_pitcher_pitches(pdf)
+    clustered = _cluster_pitcher_pitches(pdf)
 
-    # Post-process: if any cluster spans more than 6 mph of velocity, it likely
-    # contains two different pitch types (e.g. fastball + changeup that DBSCAN
-    # merged because they have similar movement). Split such clusters using
-    # KMeans(n=2) on velo so the slower group can be labeled separately.
+    # ── Velocity-split: clusters spanning >6 mph likely hold 2 pitch types ──
     try:
         from sklearn.cluster import KMeans
         next_cluster_id = max((c for c in clustered["_cluster"].unique() if c != -1), default=-1) + 1
@@ -616,18 +633,14 @@ def classify_pitches_for_pitcher(pdf):
             velos = sub["RelSpeed"].dropna()
             if len(velos) < 6:
                 continue
-            velo_range = velos.max() - velos.min()
-            if velo_range > 6:
-                # Split this cluster into 2 sub-clusters by velocity
+            if velos.max() - velos.min() > 6:
                 km = KMeans(n_clusters=2, n_init=5, random_state=42).fit(
                     velos.values.reshape(-1, 1)
                 )
                 sublabels = km.labels_
-                # Map: keep the larger sub-cluster as original c, give the
-                # smaller a new ID
                 counts = pd.Series(sublabels).value_counts()
                 if len(counts) < 2 or counts.min() < 3:
-                    continue  # too unbalanced to split safely
+                    continue
                 bigger = counts.idxmax()
                 indices = sub.dropna(subset=["RelSpeed"]).index.values
                 for idx, lbl in zip(indices, sublabels):
@@ -635,36 +648,61 @@ def classify_pitches_for_pitcher(pdf):
                         clustered.at[idx, "_cluster"] = next_cluster_id
                 next_cluster_id += 1
     except Exception:
-        pass  # KMeans optional; if it fails just use DBSCAN clusters as-is
+        pass
 
-    # Compute cluster centroids (means)
     clusters = sorted(c for c in clustered["_cluster"].unique() if c != -1)
     if len(clusters) == 0:
         return pdf  # No usable clusters; keep original labels
 
-    stats = {}
-    for c in clusters:
-        sub = clustered[clustered["_cluster"] == c]
-        stats[c] = {
-            "velo":       float(sub["RelSpeed"].mean()),
-            "ivb":        float(sub["InducedVertBreak"].mean()),
-            "hb_mirror":  float(sub["_hb_mirror"].mean()),
-            "spin":       float(sub["SpinRate"].mean()),
-            "n":          int(len(sub)),
-        }
+    # ── Assign noise pitches (-1) to their nearest cluster centroid ──
+    # This kills the stray 1-pitch "Other"/"Slider" rows in reports.
+    stats = _cluster_raw_stats(clustered, clusters)
 
-    # Primary fastball = hardest cluster (highest mean velo)
+    def _centroid_vec(c):
+        s = stats[c]
+        return np.array([s["velo"], s["ivb"], s["hb_raw"], s["spin"]]) / _CLUSTER_SCALES
+
+    valid_feats = clustered[_CLUSTER_FEATS].notna().all(axis=1)
+    noise_mask = (clustered["_cluster"] == -1) & valid_feats
+    if noise_mask.any():
+        centroid_mat = np.vstack([_centroid_vec(c) for c in clusters])
+        Xn_noise = clustered.loc[noise_mask, _CLUSTER_FEATS].values / _CLUSTER_SCALES
+        d = ((Xn_noise[:, None, :] - centroid_mat[None, :, :]) ** 2).sum(axis=2)
+        nearest = d.argmin(axis=1)
+        clustered.loc[noise_mask, "_cluster"] = [clusters[i] for i in nearest]
+        stats = _cluster_raw_stats(clustered, clusters)
+
+    # ── Absorb tiny clusters into their nearest neighbor cluster ──
+    # A few stray pitches outside a pitch's normal range should NOT create a
+    # new pitch type (e.g. 3 low-spin changeups becoming "Splitter" next to
+    # 39 ChangeUps — those are 42 changeups).
+    n_total = int(sum(s["n"] for s in stats.values()))
+    min_keep = max(4, min(10, int(round(0.05 * n_total))))
+    while len(stats) > 1:
+        smallest = min(stats, key=lambda c: stats[c]["n"])
+        if stats[smallest]["n"] >= min_keep:
+            break
+        others = [c for c in stats if c != smallest]
+        sv = _centroid_vec(smallest)
+        nearest = min(others, key=lambda c: float(((sv - _centroid_vec(c)) ** 2).sum()))
+        clustered.loc[clustered["_cluster"] == smallest, "_cluster"] = nearest
+        clusters = sorted(c for c in clustered["_cluster"].unique() if c != -1)
+        stats = _cluster_raw_stats(clustered, clusters)
+
+    # ── Handedness from primary fastball break direction ──
     fb_cluster = max(stats, key=lambda c: stats[c]["velo"])
-    fb_stats   = stats[fb_cluster]
+    hand = _infer_hand_from_clusters(pdf, stats, fb_cluster)
+    mirror = 1.0 if hand == "R" else -1.0
+    for c in stats:
+        stats[c]["hb_mirror"] = mirror * stats[c]["hb_raw"]
+    fb_stats = stats[fb_cluster]
 
-    # Label each cluster
+    # ── Label each cluster ──
     cluster_to_label = {}
     for c, cs in stats.items():
         cluster_to_label[c] = _label_cluster(cs, fb_stats, is_primary_fb=(c == fb_cluster))
 
-    # If two+ clusters got the same label, disambiguate intelligently.
-    # E.g. two "Slider" clusters: faster keeps name, slower may become Curveball/Sweeper.
-    # E.g. two "ChangeUp" clusters: just merge — they're the same pitch with natural variance.
+    # ── Disambiguate duplicate labels ──
     label_counts = {}
     for c, lbl in cluster_to_label.items():
         label_counts[lbl] = label_counts.get(lbl, 0) + 1
@@ -675,17 +713,13 @@ def classify_pitches_for_pitcher(pdf):
         same = [c for c, l in cluster_to_label.items() if l == lbl]
 
         if lbl == "Slider":
-            # Faster stays Slider; slower demoted based on shape
             same_sorted = sorted(same, key=lambda c: stats[c]["velo"], reverse=True)
             for c in same_sorted[1:]:
                 if stats[c]["ivb"] <= 0:
                     cluster_to_label[c] = "Curveball"
                 elif abs(stats[c]["hb_mirror"]) >= 10:
                     cluster_to_label[c] = "Sweeper"
-                # else: keep as Slider, will get merged below
         elif lbl == "Fastball":
-            # Two fastball clusters → likely 4-seam vs sinker.
-            # Hardest stays Fastball; second one re-labeled by movement.
             same_sorted = sorted(same, key=lambda c: stats[c]["velo"], reverse=True)
             for c in same_sorted[1:]:
                 cs = stats[c]
@@ -693,23 +727,18 @@ def classify_pitches_for_pitcher(pdf):
                     cluster_to_label[c] = "Sinker"
                 elif cs["ivb"] >= 5 and -5 <= cs["hb_mirror"] <= 5:
                     cluster_to_label[c] = "Cutter"
-                # else: keep as Fastball, will get merged below
+    # Any remaining duplicate labels simply collapse into one pitch type when
+    # the report aggregates by PitchType — which is the desired behavior.
 
-    # FINAL MERGE: any remaining duplicate labels just collapse into the same
-    # pitch type. Variance within one pitch is normal and shouldn't split into
-    # two reported pitch types in the report.
-
-    # Apply labels back to the dataframe
-    pdf = clustered.drop(columns=["_hb_mirror"], errors="ignore")
-    new_labels = pdf["_cluster"].map(cluster_to_label)
-    # Where clustering produced a label, use it. Otherwise keep original PitchType.
-    pdf["PitchType"] = new_labels.where(new_labels.notna(), pdf.get("PitchType", "Other"))
-    pdf = pdf.drop(columns=["_cluster"], errors="ignore")
-    # CANONICALIZE: ensure every final label matches one canonical name so the
-    # same physical pitch doesn't appear as both "Fastball" and "Four-Seam",
-    # or "ChangeUp" and "Changeup", in the report.
-    pdf["PitchType"] = pdf["PitchType"].replace(PT_NORMALIZE)
-    return pdf
+    # ── Apply labels ──
+    new_labels = clustered["_cluster"].map(cluster_to_label)
+    out = clustered.drop(columns=["_cluster"], errors="ignore")
+    # Clustered pitches get classifier labels. The few rows with missing
+    # tracking data (NaN features) keep their original PitchType — but
+    # canonicalized so they merge into existing rows rather than making new ones.
+    out["PitchType"] = new_labels.where(new_labels.notna(), out.get("PitchType", "Other"))
+    out["PitchType"] = out["PitchType"].replace(PT_NORMALIZE)
+    return out
 
 def auto_correct_pitch_types(pitcher_df):
     """
@@ -864,7 +893,7 @@ def _prep_df(df):
     return df
 
 @st.cache_data(ttl=3600)
-def load_index(_cache_version="v10"):
+def load_index(_cache_version="v11"):
     """Load lightweight game index — used for sidebar dropdowns. Tiny and fast.
     _cache_version: bump this string to bust the Streamlit Cloud cache."""
     # Support both new index.parquet and legacy pitches.parquet
@@ -895,7 +924,7 @@ def _to_date(x):
         return x
 
 @st.cache_data(ttl=300)
-def load_team_data(team_name, date_from, date_to, _cache_version="v6"):
+def load_team_data(team_name, date_from, date_to, _cache_version="v7"):
     """
     Load only the date files where the selected team played in the date range.
     Returns ~5-50MB instead of the full 800MB+ season dataset.
