@@ -752,19 +752,63 @@ def _classify_single_arsenal(pdf):
     out["PitchType"] = out["PitchType"].replace(PT_NORMALIZE)
     return out
 
+def _filter_foreign_pitches(pdf, max_dist_ft=1.1, max_drop_frac=0.35):
+    """
+    FAIL-SAFE for bad pitch tracking: drop pitches that physically could not
+    have come from this pitcher, based on release point.
+
+    A pitcher's release point is stable (~±0.3 ft) across a season. When an
+    operator tags another pitcher's pitches under this pitcher's name, those
+    pitches release from a clearly different spot — often the opposite side
+    entirely (L/R mix-up), e.g. hRel +1.3 vs the pitcher's true -1.9.
+
+    Method: robust center = median (RelSide, RelHeight). Any pitch whose
+    euclidean release distance from that center exceeds `max_dist_ft` is
+    ruled FOREIGN and dropped. Pitches with missing release data are kept
+    (can't judge them). Safety: if more than `max_drop_frac` of pitches would
+    be dropped, the data is too ambiguous to trust the median — drop nothing.
+
+    Returns (kept_df, n_dropped).
+    """
+    rs = pd.to_numeric(pdf.get("RelSide"), errors="coerce")
+    rh = pd.to_numeric(pdf.get("RelHeight"), errors="coerce")
+    if rs is None or rh is None:
+        return pdf, 0
+    have = rs.notna() & rh.notna()
+    if have.sum() < 10:
+        return pdf, 0
+
+    med_rs = float(rs[have].median())
+    med_rh = float(rh[have].median())
+    dist = np.sqrt((rs - med_rs) ** 2 + (rh - med_rh) ** 2)
+    foreign = have & (dist > max_dist_ft)
+
+    n_foreign = int(foreign.sum())
+    if n_foreign == 0:
+        return pdf, 0
+    if n_foreign > max_drop_frac * have.sum():
+        return pdf, 0  # too ambiguous — don't trust the filter
+
+    return pdf[~foreign].copy(), n_foreign
+
 def classify_pitches_for_pitcher(pdf):
     """
-    Entry point for per-pitcher classification, with a FAIL-SAFE for bad
-    pitch tracking: if an operator tags another pitcher's pitches under this
-    pitcher's name, the data contains TWO release points (often on opposite
-    sides for an L/R mix). Treating that as one arsenal flips the handedness
-    mirror and produces nonsense ("a lefty throwing a 93 mph sweeper").
+    Entry point for per-pitcher classification.
 
-    Detection: RelSide is bimodal — both positive and negative release sides
-    present with meaningful volume AND well-separated medians. When detected,
-    each release-side group is classified independently as its own arsenal.
+    Step 0 — FOREIGN-PITCH FILTER: pitches whose release point is over ~1.1 ft
+    from this pitcher's median release are another pitcher's mistagged pitches.
+    They are DROPPED from the dataset entirely (no phantom "93 mph Sweeper"
+    rows from a contaminating righty in a lefty's report).
+
+    Step 1 — BIMODAL RELEASE SPLIT (backup): if after filtering the data still
+    contains two well-separated release sides with real volume on both, each
+    side is classified independently as its own arsenal.
     """
     pdf = pdf.copy()
+    if len(pdf) < 5:
+        return pdf
+
+    pdf, _n_dropped = _filter_foreign_pitches(pdf)
     if len(pdf) < 5:
         return pdf
 
@@ -813,8 +857,14 @@ def auto_correct_pitch_types(pitcher_df):
             out_parts.append(pdf)
             continue
         out_parts.append(classify_pitches_for_pitcher(pdf))
-    out = pd.concat(out_parts).loc[df.index]
-    corrections = int((out["PitchType"] != orig_labels).sum())
+    out = pd.concat(out_parts)
+    # The foreign-pitch filter may DROP mistagged rows (another pitcher's
+    # pitches), so reindex to the surviving rows only — preserving the
+    # original row order.
+    surviving = df.index.intersection(out.index)
+    out = out.loc[surviving]
+    corrections = int((out["PitchType"] != orig_labels.loc[surviving]).sum())
+    corrections += int(len(df) - len(out))  # dropped rows count as corrections
     return out, corrections
 
 def fmt(s, fn="mean", d=1):
@@ -950,7 +1000,7 @@ def _prep_df(df):
     return df
 
 @st.cache_data(ttl=3600)
-def load_index(_cache_version="v12"):
+def load_index(_cache_version="v13"):
     """Load lightweight game index — used for sidebar dropdowns. Tiny and fast.
     _cache_version: bump this string to bust the Streamlit Cloud cache."""
     # Support both new index.parquet and legacy pitches.parquet
@@ -981,7 +1031,7 @@ def _to_date(x):
         return x
 
 @st.cache_data(ttl=300)
-def load_team_data(team_name, date_from, date_to, _cache_version="v8"):
+def load_team_data(team_name, date_from, date_to, _cache_version="v9"):
     """
     Load only the date files where the selected team played in the date range.
     Returns ~5-50MB instead of the full 800MB+ season dataset.
