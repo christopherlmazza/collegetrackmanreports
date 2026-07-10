@@ -880,9 +880,9 @@ def draw_zone(ax, data, title, pts):
     ax.set_facecolor("#FFFFFF")
     ax.add_patch(Rectangle((-0.95, 1.6), 1.9, 1.9, fill=False, ec="#1a1a1a", lw=1.6, alpha=0.9, zorder=3))
     ax.add_patch(Rectangle((-0.95, 1.6), 1.9, 1.9, fill=True, fc="#F4F6F9", alpha=0.45, zorder=2))
-    ax.add_patch(Rectangle((-1.4, 1.2), 2.8, 2.7, fill=False, ec="#AAAAAA", lw=0.7, ls="--", alpha=0.4, zorder=2))
+    ax.add_patch(Rectangle((-1.4, 1.2), 2.8, 2.7, fill=False, ec="#4A4A4A", lw=1.1, ls="--", alpha=0.85, zorder=2))
     ax.add_patch(Polygon([(-.708, .55), (.708, .55), (.708, .35), (0, .15), (-.708, .35)],
-                         closed=True, fc="none", ec="#999999", lw=.7, alpha=0.5))
+                         closed=True, fc="none", ec="#1a1a1a", lw=1.4, alpha=0.9))
     outcome_markers = {
         "BallCalled": ("o", False), "BallinDirt": ("o", False), "BallIntentional": ("o", False),
         "StrikeCalled": ("o", True), "StrikeSwinging": ("X", True),
@@ -1349,7 +1349,7 @@ def generate_pitcher_page(p, pname, gdate, opp):
 
     pts = p["PitchType"].value_counts().index.tolist()
 
-    fig = plt.figure(figsize=(26, 16), facecolor="white")
+    fig = plt.figure(figsize=(18, 13), facecolor="white")
     gs = GridSpec(4, 4, figure=fig,
                   height_ratios=[.07, .025, .42, .49],
                   width_ratios=[1, 1, 1, 0.65],
