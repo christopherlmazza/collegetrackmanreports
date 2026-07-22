@@ -231,14 +231,11 @@ warnings.filterwarnings("ignore")
 STRIKE_CALLS = {"StrikeCalled", "StrikeSwinging", "FoulBallNotFieldable", "InPlay"}
 SWING_CALLS  = {"StrikeSwinging", "FoulBallNotFieldable", "InPlay"}
 PITCH_COLORS = {
-    "Fastball": "#E91E63", "FourSeamFastBall": "#E91E63", "Four-Seam": "#E91E63",
-    "Sinker": "#00BCD4", "TwoSeamFastBall": "#00BCD4", "Two-Seam": "#00BCD4",
-    "Cutter": "#FF9800",
-    "Slider": "#009688",
-    "Curveball": "#3F51B5",
-    "ChangeUp": "#4CAF50", "Changeup": "#4CAF50",
-    "Splitter": "#9C27B0",
-    "Sweeper": "#795548",
+    "Fastball": "#D32F2F", "FourSeamFastBall": "#D32F2F", "Four-Seam": "#D32F2F",
+    "Sinker": "#E65100", "TwoSeamFastBall": "#E65100", "Two-Seam": "#E65100",
+    "Cutter": "#B8A000", "Slider": "#00897B", "Curveball": "#1565C0",
+    "ChangeUp": "#F9A825", "Changeup": "#F9A825",
+    "Splitter": "#00796B", "Sweeper": "#7B1FA2",
     "Knuckleball": "#9E9E9E", "Other": "#888888",
 }
 BG_COLOR = "#FFFFFF"
@@ -453,44 +450,49 @@ def in_zone(s):
 # rules work for both.
 
 def _infer_hand_for_pitcher(pdf):
-    """LHP if median RelSide < 0, else RHP. Returns 'L' or 'R'.
-    Used only as a FALLBACK — primary handedness signal is the fastball's
-    break direction (see classify_pitches_for_pitcher)."""
+    """LHP if median RelSide < 0, else RHP. Returns 'L' or 'R'."""
     rs = pd.to_numeric(pdf.get("RelSide"), errors="coerce").dropna()
     if len(rs) == 0:
         return "R"
     return "L" if rs.median() < 0 else "R"
 
-_CLUSTER_FEATS  = ["RelSpeed", "InducedVertBreak", "HorzBreak", "SpinRate"]
-_CLUSTER_SCALES = np.array([2.0, 4.0, 4.0, 250.0])  # velo, ivb, hb, spin
-
 def _cluster_pitcher_pitches(pdf, min_cluster_size=5):
     """
-    Cluster a single pitcher's pitches in (velo, IVB, raw HB, spin) space.
-    NOTE: we cluster on RAW HorzBreak — handedness mirroring just flips one
-    axis and doesn't change which pitches group together, so hand is inferred
-    AFTER clustering (from the primary fastball's break direction, which is a
-    far more reliable signal than RelSide alone).
-    Returns the input df with a new '_cluster' int column. -1 = noise.
+    Cluster a single pitcher's pitches in (velo, IVB, HB_mirrored, spin) space.
+    Uses DBSCAN for shape-flexible clusters (pitchers don't all have N pitches).
+    Returns the input df with a new '_cluster' int column. -1 = noise/uncluster.
     """
+    feats = ["RelSpeed", "InducedVertBreak", "HorzBreak", "SpinRate"]
     pdf = pdf.copy()
-    valid = pdf[_CLUSTER_FEATS].notna().all(axis=1)
+    pdf["_hb_mirror"] = pdf["HorzBreak"]
+    is_lhp = _infer_hand_for_pitcher(pdf) == "L"
+    if is_lhp:
+        pdf["_hb_mirror"] = -pdf["_hb_mirror"]
+
+    valid = pdf[feats].notna().all(axis=1) & pdf["_hb_mirror"].notna()
     pdf["_cluster"] = -1
     if valid.sum() < min_cluster_size:
-        return pdf
+        return pdf, is_lhp
 
-    X = pdf.loc[valid, _CLUSTER_FEATS].values
-    Xn = X / _CLUSTER_SCALES
+    X = pdf.loc[valid, ["RelSpeed", "InducedVertBreak", "_hb_mirror", "SpinRate"]].values
+    # Normalize: velo and spin have very different scales than IVB/HB.
+    # Use scale factors that roughly equalize their importance.
+    scales = np.array([2.0, 4.0, 4.0, 250.0])  # velo, ivb, hb, spin
+    Xn = X / scales
 
     try:
         from sklearn.cluster import DBSCAN
+        # Moderately tight eps so fastball/changeup mixes (similar movement,
+        # 5-10 mph velo gap) get separated into different clusters. The
+        # post-clustering merge logic handles any over-splitting downstream
+        # by collapsing same-labeled clusters and re-labeling slower duplicates.
         eps = 1.0
         min_samp = max(3, min(5, int(valid.sum() * 0.03)))
         labels = DBSCAN(eps=eps, min_samples=min_samp).fit_predict(Xn)
         pdf.loc[valid, "_cluster"] = labels
     except Exception:
         pdf["_cluster"] = -1
-    return pdf
+    return pdf, is_lhp
 
 def _label_cluster(cluster_stats, fb_stats, is_primary_fb):
     """
@@ -498,144 +500,110 @@ def _label_cluster(cluster_stats, fb_stats, is_primary_fb):
     cluster_stats: dict with 'velo','ivb','hb_mirror','spin' (means for cluster)
     fb_stats: same, for the primary fastball cluster (the hardest cluster)
     is_primary_fb: True if this cluster IS the primary fastball
-    hb_mirror convention: positive = ARM side, negative = GLOVE side
-    (already corrected for handedness before this is called).
-    Returns one of: Fastball, Sinker, Cutter, ChangeUp, Splitter,
+    Returns one of: Fastball, Sinker, Cutter, Changeup, Splitter,
                     Curveball, Slider, Sweeper, Other
     """
     velo  = cluster_stats["velo"]
     ivb   = cluster_stats["ivb"]
-    hb    = cluster_stats["hb_mirror"]
+    hb    = cluster_stats["hb_mirror"]   # already mirrored: + = arm side
     spin  = cluster_stats["spin"]
     fb_velo = fb_stats["velo"]
     fb_hb   = fb_stats["hb_mirror"]
+    fb_ivb  = fb_stats["ivb"]
 
     # ── 1. PRIMARY FASTBALL CLUSTER LABELING ──
     if is_primary_fb:
-        # Sinker: low ride AND arm-side run >= ride
+        # Sinker: low ride AND arm-side run >= ride (or sub-10 IVB w/ matching HB)
         if ivb < 10 and hb >= ivb:
             return "Sinker"
         # Cutter (as primary): ride 5+, HB within ±5
         if ivb >= 5 and -5 <= hb <= 5:
             return "Cutter"
+        # Fastball: default for hardest cluster
         return "Fastball"
 
     # ── 2. SPLITTER: low spin + slower ──
     if spin < 1500 and velo < fb_velo - 5:
         return "Splitter"
 
-    # ── 3. CURVEBALL: real depth (5+ inches of drop) and at least slight
-    # glove-side break.
+    # ── 3. CURVEBALL: real depth (5+ inches of drop). HB direction matters but
+    # threshold is loose — a curveball needs at least slight glove-side break
+    # (HB ≤ -2) since a deep pitch with arm-side run would be a splitter/sinker
+    # (handled above).
     if ivb <= -5 and hb <= -2:
         return "Curveball"
 
-    # ── 4. SWEEPER: big glove-side sweep WITHOUT curveball depth ──
-    if hb <= -10 and ivb > -5:
-        return "Sweeper"
+    # ── 4. SWEEPER: big glove-side sweep WITHOUT significant depth ──
+    # Sweepers sit near IVB = 0 (slight ride or slight drop, but not curveball-deep).
+    # If a pitch has 10+ sweep AND 5+ depth, the Curveball rule above caught it.
+    if fb_hb > 3:
+        # Standard pitcher: FB has arm-side run, sweeper goes glove-side
+        if hb <= -10 and ivb > -5:
+            return "Sweeper"
+    else:
+        # Cutter-primary pitcher: 10+ inches of glove-side sweep, minimal depth
+        if hb <= -10 and ivb > -5:
+            return "Sweeper"
 
-    # ── 4b. SECONDARY FASTBALL: near-fastball velo with arm-side run ──
-    # Pitchers with two fastball shapes (4-seam + sinker, two-seam variants).
-    # Without this rule a second hard arm-side cluster falls through every
-    # other check and lands in "Other".
-    if velo >= fb_velo - 5 and hb >= 5:
-        if ivb < 10 and hb >= ivb:
-            return "Sinker"
-        return "Fastball"
-
-    # ── 5. CHANGEUP: 7+ mph slower than FB, arm-side movement matching FB ──
+    # ── 5. CHANGEUP: 7+ mph slower than FB, arm-side movement matching FB direction ──
+    # "Arm-side run similar to primary fastball" — if FB has arm-side HB, CH should too.
+    # If FB is cutter-like (low HB), CH just needs arm-side run > 5.
     if velo <= fb_velo - 7:
         if fb_hb > 3:
+            # FB has arm-side run — CH should match direction (HB > 0, ideally close to fb_hb)
             if hb > 3:
                 return "ChangeUp"
         else:
+            # FB is cutter-ish — any arm-side movement is changeup
             if hb > 5:
                 return "ChangeUp"
 
-    # ── 6. CUTTER: 5+ IVB, HB between -5 and +5, near fastball velo ──
+    # ── 6. CUTTER: 5+ IVB, HB between -5 and +5, faster than slider ──
     if ivb >= 5 and -5 <= hb <= 5 and velo >= fb_velo - 8:
         return "Cutter"
 
-    # ── 7. SLIDER: minimal-movement breaking ball around (0,0) ──
+    # ── 7. SLIDER: minimal-movement breaking ball sitting around (0,0) on
+    # the pitch plot. Includes gyro sliders with slight depth or sweep.
+    # Covers: HB between -10 and 0, IVB between -5 and +5.
+    # Anything with deeper depth OR more sweep falls through to other categories
+    # (Curveball above needs depth+sweep; Sweeper above needs ≥10 sweep).
     if -10 < hb <= 0 and -5 < ivb < 5:
         return "Slider"
+    # Also: any glove-side break with no depth is still a slider
     if hb <= -3 and ivb > -5:
         return "Slider"
 
-    # ── 8. Catch-all — best-guess by shape rather than "Other" ──
+    # ── 8. Catch-all — make a best-guess based on shape rather than "Other".
+    # By this point the pitch doesn't fit any tight rule but it IS a real pitch.
+    # Use coarse direction + depth to pick the closest pitch type.
     if ivb <= -3:
+        # Has some drop — call it a Curveball
         return "Curveball"
     if hb <= -3:
+        # Glove-side break with no significant depth — Slider
         return "Slider"
-    if hb >= 3:
-        # Arm-side run: slower → ChangeUp, near FB velo → Sinker/Fastball
-        if velo <= fb_velo - 5:
-            return "ChangeUp"
-        return "Sinker" if ivb < 10 else "Fastball"
+    if hb >= 8 and velo < fb_velo - 3:
+        # Arm-side run, slower than fastball — Changeup
+        return "ChangeUp"
     return "Other"
 
-def _cluster_raw_stats(clustered, clusters):
-    """Mean (velo, ivb, raw hb, spin) + n for each cluster id."""
-    stats = {}
-    for c in clusters:
-        sub = clustered[clustered["_cluster"] == c]
-        stats[c] = {
-            "velo":   float(sub["RelSpeed"].mean()),
-            "ivb":    float(sub["InducedVertBreak"].mean()),
-            "hb_raw": float(sub["HorzBreak"].mean()),
-            "spin":   float(sub["SpinRate"].mean()),
-            "n":      int(len(sub)),
-        }
-    return stats
-
-def _infer_hand_from_clusters(pdf, stats, fb_cluster):
-    """
-    Robust handedness inference. RelSide alone misfires for some pitchers,
-    which flips the HB mirror and turns sliders into 'changeups' (and vice
-    versa). The fastball's run direction is near-deterministic:
-      RHP fastballs/sinkers run ARM side = positive raw HorzBreak
-      LHP fastballs/sinkers run ARM side = negative raw HorzBreak
-    Priority:
-      1. Primary fastball raw HB sign (if |HB| >= 4 — i.e. not a cutter)
-      2. Any other hard cluster (within 4 mph of FB) with |HB| >= 6
-      3. RelSide median (fallback)
-    """
-    fb_hb_raw = stats[fb_cluster]["hb_raw"]
-    if abs(fb_hb_raw) >= 4:
-        return "R" if fb_hb_raw > 0 else "L"
-
-    # FB is cutter-ish — look for another hard pitch with clear run
-    fb_velo = stats[fb_cluster]["velo"]
-    candidates = [
-        (c, s) for c, s in stats.items()
-        if c != fb_cluster and s["velo"] >= fb_velo - 4 and abs(s["hb_raw"]) >= 6
-    ]
-    if candidates:
-        # Largest such cluster wins
-        c, s = max(candidates, key=lambda kv: kv[1]["n"])
-        return "R" if s["hb_raw"] > 0 else "L"
-
-    return _infer_hand_for_pitcher(pdf)
-
-def _classify_single_arsenal(pdf):
+def classify_pitches_for_pitcher(pdf):
     """
     Run the full rule-based classifier on one pitcher's pitches.
-    Pipeline:
-      1. DBSCAN cluster on (velo, ivb, raw hb, spin)
-      2. Velocity-split any cluster spanning >6 mph (fastball+changeup mixes)
-      3. Assign DBSCAN noise pitches to their nearest cluster
-      4. Absorb tiny clusters (below min usage) into their nearest cluster —
-         a handful of outlier pitches should NOT become their own pitch type
-      5. Infer handedness from the primary fastball's break direction
-      6. Label clusters relative to the primary fastball (mirrored HB)
     Returns a new df with the 'PitchType' column overwritten with our labels.
+    Pitches that couldn't be clustered keep whatever PitchType they came in with
+    (which would be the original Auto/Tagged value from resolve_pt).
     """
     pdf = pdf.copy()
     if len(pdf) < 5:
         return pdf
 
-    clustered = _cluster_pitcher_pitches(pdf)
+    clustered, is_lhp = _cluster_pitcher_pitches(pdf)
 
-    # ── Velocity-split: clusters spanning >6 mph likely hold 2 pitch types ──
+    # Post-process: if any cluster spans more than 6 mph of velocity, it likely
+    # contains two different pitch types (e.g. fastball + changeup that DBSCAN
+    # merged because they have similar movement). Split such clusters using
+    # KMeans(n=2) on velo so the slower group can be labeled separately.
     try:
         from sklearn.cluster import KMeans
         next_cluster_id = max((c for c in clustered["_cluster"].unique() if c != -1), default=-1) + 1
@@ -645,14 +613,18 @@ def _classify_single_arsenal(pdf):
             velos = sub["RelSpeed"].dropna()
             if len(velos) < 6:
                 continue
-            if velos.max() - velos.min() > 6:
+            velo_range = velos.max() - velos.min()
+            if velo_range > 6:
+                # Split this cluster into 2 sub-clusters by velocity
                 km = KMeans(n_clusters=2, n_init=5, random_state=42).fit(
                     velos.values.reshape(-1, 1)
                 )
                 sublabels = km.labels_
+                # Map: keep the larger sub-cluster as original c, give the
+                # smaller a new ID
                 counts = pd.Series(sublabels).value_counts()
                 if len(counts) < 2 or counts.min() < 3:
-                    continue
+                    continue  # too unbalanced to split safely
                 bigger = counts.idxmax()
                 indices = sub.dropna(subset=["RelSpeed"]).index.values
                 for idx, lbl in zip(indices, sublabels):
@@ -660,61 +632,36 @@ def _classify_single_arsenal(pdf):
                         clustered.at[idx, "_cluster"] = next_cluster_id
                 next_cluster_id += 1
     except Exception:
-        pass
+        pass  # KMeans optional; if it fails just use DBSCAN clusters as-is
 
+    # Compute cluster centroids (means)
     clusters = sorted(c for c in clustered["_cluster"].unique() if c != -1)
     if len(clusters) == 0:
         return pdf  # No usable clusters; keep original labels
 
-    # ── Assign noise pitches (-1) to their nearest cluster centroid ──
-    # This kills the stray 1-pitch "Other"/"Slider" rows in reports.
-    stats = _cluster_raw_stats(clustered, clusters)
+    stats = {}
+    for c in clusters:
+        sub = clustered[clustered["_cluster"] == c]
+        stats[c] = {
+            "velo":       float(sub["RelSpeed"].mean()),
+            "ivb":        float(sub["InducedVertBreak"].mean()),
+            "hb_mirror":  float(sub["_hb_mirror"].mean()),
+            "spin":       float(sub["SpinRate"].mean()),
+            "n":          int(len(sub)),
+        }
 
-    def _centroid_vec(c):
-        s = stats[c]
-        return np.array([s["velo"], s["ivb"], s["hb_raw"], s["spin"]]) / _CLUSTER_SCALES
-
-    valid_feats = clustered[_CLUSTER_FEATS].notna().all(axis=1)
-    noise_mask = (clustered["_cluster"] == -1) & valid_feats
-    if noise_mask.any():
-        centroid_mat = np.vstack([_centroid_vec(c) for c in clusters])
-        Xn_noise = clustered.loc[noise_mask, _CLUSTER_FEATS].values / _CLUSTER_SCALES
-        d = ((Xn_noise[:, None, :] - centroid_mat[None, :, :]) ** 2).sum(axis=2)
-        nearest = d.argmin(axis=1)
-        clustered.loc[noise_mask, "_cluster"] = [clusters[i] for i in nearest]
-        stats = _cluster_raw_stats(clustered, clusters)
-
-    # ── Absorb tiny clusters into their nearest neighbor cluster ──
-    # A few stray pitches outside a pitch's normal range should NOT create a
-    # new pitch type (e.g. 3 low-spin changeups becoming "Splitter" next to
-    # 39 ChangeUps — those are 42 changeups).
-    n_total = int(sum(s["n"] for s in stats.values()))
-    min_keep = max(4, min(10, int(round(0.05 * n_total))))
-    while len(stats) > 1:
-        smallest = min(stats, key=lambda c: stats[c]["n"])
-        if stats[smallest]["n"] >= min_keep:
-            break
-        others = [c for c in stats if c != smallest]
-        sv = _centroid_vec(smallest)
-        nearest = min(others, key=lambda c: float(((sv - _centroid_vec(c)) ** 2).sum()))
-        clustered.loc[clustered["_cluster"] == smallest, "_cluster"] = nearest
-        clusters = sorted(c for c in clustered["_cluster"].unique() if c != -1)
-        stats = _cluster_raw_stats(clustered, clusters)
-
-    # ── Handedness from primary fastball break direction ──
+    # Primary fastball = hardest cluster (highest mean velo)
     fb_cluster = max(stats, key=lambda c: stats[c]["velo"])
-    hand = _infer_hand_from_clusters(pdf, stats, fb_cluster)
-    mirror = 1.0 if hand == "R" else -1.0
-    for c in stats:
-        stats[c]["hb_mirror"] = mirror * stats[c]["hb_raw"]
-    fb_stats = stats[fb_cluster]
+    fb_stats   = stats[fb_cluster]
 
-    # ── Label each cluster ──
+    # Label each cluster
     cluster_to_label = {}
     for c, cs in stats.items():
         cluster_to_label[c] = _label_cluster(cs, fb_stats, is_primary_fb=(c == fb_cluster))
 
-    # ── Disambiguate duplicate labels ──
+    # If two+ clusters got the same label, disambiguate intelligently.
+    # E.g. two "Slider" clusters: faster keeps name, slower may become Curveball/Sweeper.
+    # E.g. two "ChangeUp" clusters: just merge — they're the same pitch with natural variance.
     label_counts = {}
     for c, lbl in cluster_to_label.items():
         label_counts[lbl] = label_counts.get(lbl, 0) + 1
@@ -725,13 +672,17 @@ def _classify_single_arsenal(pdf):
         same = [c for c, l in cluster_to_label.items() if l == lbl]
 
         if lbl == "Slider":
+            # Faster stays Slider; slower demoted based on shape
             same_sorted = sorted(same, key=lambda c: stats[c]["velo"], reverse=True)
             for c in same_sorted[1:]:
                 if stats[c]["ivb"] <= 0:
                     cluster_to_label[c] = "Curveball"
                 elif abs(stats[c]["hb_mirror"]) >= 10:
                     cluster_to_label[c] = "Sweeper"
+                # else: keep as Slider, will get merged below
         elif lbl == "Fastball":
+            # Two fastball clusters → likely 4-seam vs sinker.
+            # Hardest stays Fastball; second one re-labeled by movement.
             same_sorted = sorted(same, key=lambda c: stats[c]["velo"], reverse=True)
             for c in same_sorted[1:]:
                 cs = stats[c]
@@ -739,107 +690,23 @@ def _classify_single_arsenal(pdf):
                     cluster_to_label[c] = "Sinker"
                 elif cs["ivb"] >= 5 and -5 <= cs["hb_mirror"] <= 5:
                     cluster_to_label[c] = "Cutter"
-    # Any remaining duplicate labels simply collapse into one pitch type when
-    # the report aggregates by PitchType — which is the desired behavior.
+                # else: keep as Fastball, will get merged below
 
-    # ── Apply labels ──
-    new_labels = clustered["_cluster"].map(cluster_to_label)
-    out = clustered.drop(columns=["_cluster"], errors="ignore")
-    # Clustered pitches get classifier labels. The few rows with missing
-    # tracking data (NaN features) keep their original PitchType — but
-    # canonicalized so they merge into existing rows rather than making new ones.
-    out["PitchType"] = new_labels.where(new_labels.notna(), out.get("PitchType", "Other"))
-    out["PitchType"] = out["PitchType"].replace(PT_NORMALIZE)
-    return out
+    # FINAL MERGE: any remaining duplicate labels just collapse into the same
+    # pitch type. Variance within one pitch is normal and shouldn't split into
+    # two reported pitch types in the report.
 
-def _filter_foreign_pitches(pdf, max_dist_ft=1.1, max_drop_frac=0.35):
-    """
-    FAIL-SAFE for bad pitch tracking: drop pitches that physically could not
-    have come from this pitcher, based on release point.
-
-    A pitcher's release point is stable (~±0.3 ft) across a season. When an
-    operator tags another pitcher's pitches under this pitcher's name, those
-    pitches release from a clearly different spot — often the opposite side
-    entirely (L/R mix-up), e.g. hRel +1.3 vs the pitcher's true -1.9.
-
-    Method: robust center = median (RelSide, RelHeight). Any pitch whose
-    euclidean release distance from that center exceeds `max_dist_ft` is
-    ruled FOREIGN and dropped. Pitches with missing release data are kept
-    (can't judge them). Safety: if more than `max_drop_frac` of pitches would
-    be dropped, the data is too ambiguous to trust the median — drop nothing.
-
-    Returns (kept_df, n_dropped).
-    """
-    rs = pd.to_numeric(pdf.get("RelSide"), errors="coerce")
-    rh = pd.to_numeric(pdf.get("RelHeight"), errors="coerce")
-    if rs is None or rh is None:
-        return pdf, 0
-    have = rs.notna() & rh.notna()
-    if have.sum() < 10:
-        return pdf, 0
-
-    med_rs = float(rs[have].median())
-    med_rh = float(rh[have].median())
-    dist = np.sqrt((rs - med_rs) ** 2 + (rh - med_rh) ** 2)
-    foreign = have & (dist > max_dist_ft)
-
-    n_foreign = int(foreign.sum())
-    if n_foreign == 0:
-        return pdf, 0
-    if n_foreign > max_drop_frac * have.sum():
-        return pdf, 0  # too ambiguous — don't trust the filter
-
-    return pdf[~foreign].copy(), n_foreign
-
-def classify_pitches_for_pitcher(pdf):
-    """
-    Entry point for per-pitcher classification.
-
-    Step 0 — FOREIGN-PITCH FILTER: pitches whose release point is over ~1.1 ft
-    from this pitcher's median release are another pitcher's mistagged pitches.
-    They are DROPPED from the dataset entirely (no phantom "93 mph Sweeper"
-    rows from a contaminating righty in a lefty's report).
-
-    Step 1 — BIMODAL RELEASE SPLIT (backup): if after filtering the data still
-    contains two well-separated release sides with real volume on both, each
-    side is classified independently as its own arsenal.
-    """
-    pdf = pdf.copy()
-    if len(pdf) < 5:
-        return pdf
-
-    pdf, _n_dropped = _filter_foreign_pitches(pdf)
-    if len(pdf) < 5:
-        return pdf
-
-    rs = pd.to_numeric(pdf.get("RelSide"), errors="coerce")
-    if rs is not None and rs.notna().sum() >= 10:
-        pos_mask = rs > 0.25
-        neg_mask = rs < -0.25
-        n_pos, n_neg = int(pos_mask.sum()), int(neg_mask.sum())
-        n_sided = n_pos + n_neg
-        if (n_pos >= 5 and n_neg >= 5 and n_sided > 0
-                and min(n_pos, n_neg) >= 0.08 * n_sided):
-            sep = float(rs[pos_mask].median() - rs[neg_mask].median())
-            if sep >= 1.0:
-                # Contaminated outing: classify each release side separately
-                parts = []
-                grp_pos = pdf[pos_mask.fillna(False)]
-                grp_neg = pdf[neg_mask.fillna(False)]
-                rest    = pdf[~(pos_mask.fillna(False) | neg_mask.fillna(False))]
-                for grp in (grp_pos, grp_neg):
-                    if len(grp) >= 5:
-                        parts.append(_classify_single_arsenal(grp))
-                    else:
-                        parts.append(grp)
-                if len(rest) > 0:
-                    parts.append(rest)
-                out = pd.concat(parts).loc[pdf.index]
-                if "PitchType" in out.columns:
-                    out["PitchType"] = out["PitchType"].replace(PT_NORMALIZE)
-                return out
-
-    return _classify_single_arsenal(pdf)
+    # Apply labels back to the dataframe
+    pdf = clustered.drop(columns=["_hb_mirror"], errors="ignore")
+    new_labels = pdf["_cluster"].map(cluster_to_label)
+    # Where clustering produced a label, use it. Otherwise keep original PitchType.
+    pdf["PitchType"] = new_labels.where(new_labels.notna(), pdf.get("PitchType", "Other"))
+    pdf = pdf.drop(columns=["_cluster"], errors="ignore")
+    # CANONICALIZE: ensure every final label matches one canonical name so the
+    # same physical pitch doesn't appear as both "Fastball" and "Four-Seam",
+    # or "ChangeUp" and "Changeup", in the report.
+    pdf["PitchType"] = pdf["PitchType"].replace(PT_NORMALIZE)
+    return pdf
 
 def auto_correct_pitch_types(pitcher_df):
     """
@@ -857,14 +724,8 @@ def auto_correct_pitch_types(pitcher_df):
             out_parts.append(pdf)
             continue
         out_parts.append(classify_pitches_for_pitcher(pdf))
-    out = pd.concat(out_parts)
-    # The foreign-pitch filter may DROP mistagged rows (another pitcher's
-    # pitches), so reindex to the surviving rows only — preserving the
-    # original row order.
-    surviving = df.index.intersection(out.index)
-    out = out.loc[surviving]
-    corrections = int((out["PitchType"] != orig_labels.loc[surviving]).sum())
-    corrections += int(len(df) - len(out))  # dropped rows count as corrections
+    out = pd.concat(out_parts).loc[df.index]
+    corrections = int((out["PitchType"] != orig_labels).sum())
     return out, corrections
 
 def fmt(s, fn="mean", d=1):
@@ -873,16 +734,56 @@ def fmt(s, fn="mean", d=1):
     r = v.mean() if fn == "mean" else v.max()
     return f"{r:.{d}f}"
 
+# ---------------------------------------------------------------------------
+# Height-Adjusted Vertical Approach Angle (HAVAA)
+# ---------------------------------------------------------------------------
+# Raw VAA is heavily confounded by the height at which the pitch crosses the
+# plate (a letter-high pitch is naturally flatter than a knee-high one). HAVAA
+# removes that dependency: HAVAA = actual VAA - expected VAA at that plate
+# height, where expected VAA = b0 + b1 * PlateLocHeight.
+# Positive HAVAA = FLATTER than a typical pitch of that type at the same height.
+#
+# Coefficients are per-pitch-type OLS fits (VAA ~ PlateLocHeight) on 222,705
+# D1 pitches (2026-02-14, 02-28, 03-14, 04-11, 05-02). Fastball R^2 = 0.76.
+HAVAA_COEFFS = {
+    "Fastball":  (-8.1506, 1.0733),
+    "Sinker":    (-8.4070, 1.0656),
+    "Cutter":    (-9.3298, 1.0705),
+    "Slider":    (-10.1431, 1.0521),
+    "Curveball": (-11.4301, 0.9818),
+    "ChangeUp":  (-9.5234, 1.0623),
+    "Other":     (-7.9380, 1.0594),
+}
+
+def _havaa_mean(s, pt):
+    """Mean Height-Adjusted VAA for a pitch-type subset s. np.nan if unavailable."""
+    co = HAVAA_COEFFS.get(pt)
+    if co is None:
+        return np.nan
+    b0, b1 = co
+    sub = s[["VertApprAngle", "PlateLocHeight"]].dropna()
+    if sub.empty:
+        return np.nan
+    resid = sub["VertApprAngle"] - (b0 + b1 * sub["PlateLocHeight"])
+    return float(resid.mean())
+
+def havaa_fmt(s, pt, d=1):
+    """Formatted (signed) mean HAVAA for table cells; '—' if unavailable."""
+    v = _havaa_mean(s, pt)
+    if v is None or (isinstance(v, float) and np.isnan(v)):
+        return "—"
+    return f"{v:+.{d}f}"
+
 # ===========================================================================
 # DRAWING FUNCTIONS
 # ===========================================================================
 def draw_zone(ax, data, title, pts):
-    ax.set_facecolor("#FFFFFF")
-    ax.add_patch(Rectangle((-0.95, 1.6), 1.9, 1.9, fill=False, ec="#1a1a1a", lw=1.6, alpha=0.9, zorder=3))
-    ax.add_patch(Rectangle((-0.95, 1.6), 1.9, 1.9, fill=True, fc="#F4F6F9", alpha=0.45, zorder=2))
-    ax.add_patch(Rectangle((-1.4, 1.2), 2.8, 2.7, fill=False, ec="#4A4A4A", lw=1.1, ls="--", alpha=0.85, zorder=2))
+    ax.set_facecolor(PANEL_COLOR)
+    ax.add_patch(Rectangle((-0.95, 1.6), 1.9, 1.9, fill=False, ec="#333333", lw=1.5, alpha=0.8, zorder=3))
+    ax.add_patch(Rectangle((-0.95, 1.6), 1.9, 1.9, fill=True, fc="#E8EDF2", alpha=0.3, zorder=2))
+    ax.add_patch(Rectangle((-1.4, 1.2), 2.8, 2.7, fill=False, ec="#AAAAAA", lw=0.7, ls="--", alpha=0.4, zorder=2))
     ax.add_patch(Polygon([(-.708, .55), (.708, .55), (.708, .35), (0, .15), (-.708, .35)],
-                         closed=True, fc="none", ec="#1a1a1a", lw=1.4, alpha=0.9))
+                         closed=True, fc="none", ec=MUTED_TEXT, lw=.7, alpha=0.4))
     outcome_markers = {
         "BallCalled": ("o", False), "BallinDirt": ("o", False), "BallIntentional": ("o", False),
         "StrikeCalled": ("o", True), "StrikeSwinging": ("X", True),
@@ -899,66 +800,58 @@ def draw_zone(ax, data, title, pts):
             valid = x.notna() & y.notna()
             if not valid.any(): continue
             if filled:
-                ax.scatter(x[valid], y[valid], marker=marker, c=color, s=48, alpha=0.92,
-                           edgecolors="white", linewidths=0.6, zorder=5)
+                ax.scatter(x[valid], y[valid], marker=marker, c=color, s=45, alpha=0.9,
+                           edgecolors="black", linewidths=0.3, zorder=5)
             else:
-                ax.scatter(x[valid], y[valid], marker=marker, c="none", s=48, alpha=0.92,
-                           edgecolors=color, linewidths=1.3, zorder=5)
+                ax.scatter(x[valid], y[valid], marker=marker, c="none", s=45, alpha=0.9,
+                           edgecolors=color, linewidths=1.2, zorder=5)
     ax.set_xlim(-2.5, 2.5); ax.set_ylim(0, 5); ax.set_aspect("equal")
-    ax.set_title(title, fontsize=13, fontweight="bold", color="#1a1a1a", pad=6)
+    ax.set_title(title, fontsize=13, fontweight="bold", color=TEXT_COLOR, pad=6)
     ax.set_xticks([]); ax.set_yticks([])
-    for sp in ax.spines.values():
-        sp.set_visible(True); sp.set_color("#222222"); sp.set_linewidth(0.8)
+    for sp in ax.spines.values(): sp.set_visible(False)
 
 def draw_mov(ax, data, pts):
-    ax.set_facecolor("#FFFFFF")
-    ax.axhline(0, color="#8B7355", ls="--", lw=0.8, alpha=0.7, zorder=1)
-    ax.axvline(0, color="#8B7355", ls="--", lw=0.8, alpha=0.7, zorder=1)
+    ax.set_facecolor(PANEL_COLOR)
+    ax.axhline(0, color=GRID_COLOR, ls="-", lw=1, zorder=1)
+    ax.axvline(0, color=GRID_COLOR, ls="-", lw=1, zorder=1)
     for r in [5, 10, 15, 20]:
-        ax.add_patch(plt.Circle((0, 0), r, fill=False, ec="#999999", lw=0.35, ls="--", alpha=0.25))
+        ax.add_patch(plt.Circle((0, 0), r, fill=False, ec=GRID_COLOR, lw=0.3, ls="--", alpha=0.3))
     for pt in pts:
         s = data[data["PitchType"] == pt]
         if not s.empty:
             ax.scatter(s["HorzBreak"], s["InducedVertBreak"],
-                       c=pc(pt), label=pt, s=42, alpha=.9, edgecolors="white", linewidths=0.7, zorder=5)
+                       c=pc(pt), label=pt, s=40, alpha=.9, edgecolors="black", linewidths=0.3, zorder=5)
     ax.set_xlim(-25, 25); ax.set_ylim(-25, 25)
-    ax.set_xlabel("Horizontal Break (in)", fontsize=10, color="#333333")
-    ax.set_ylabel("Induced Vertical Break (in)", fontsize=10, color="#333333")
-    ax.set_title("Pitch Breaks", fontsize=13, fontweight="bold", color="#1a1a1a", pad=6)
-    ax.legend(loc="upper center", bbox_to_anchor=(.5, -.08), ncol=min(len(pts), 5),
-              fontsize=10, frameon=False, labelcolor="#333333")
-    ax.tick_params(labelsize=8, colors="#444444")
-    ax.grid(True, alpha=0.18, linewidth=0.4)
-    ax.set_aspect("equal")
-    ax.text(-23, -22, "\u2190 Glove Side", fontsize=8, alpha=0.75, color="#333333",
-            bbox=dict(boxstyle="round,pad=0.25", facecolor="white", edgecolor="#aaaaaa", linewidth=0.4))
-    ax.text(11, -22, "Arm Side \u2192", fontsize=8, alpha=0.75, color="#333333",
-            bbox=dict(boxstyle="round,pad=0.25", facecolor="white", edgecolor="#aaaaaa", linewidth=0.4))
-    for sp in ax.spines.values(): sp.set_color("#cccccc")
+    ax.set_xlabel("HB (in)", fontsize=11, color=MUTED_TEXT)
+    ax.set_ylabel("IVB (in)", fontsize=11, color=MUTED_TEXT)
+    ax.set_title("Pitch Movement", fontsize=13, fontweight="bold", color=TEXT_COLOR, pad=6)
+    ax.legend(loc="upper center", bbox_to_anchor=(.5, -.06), ncol=min(len(pts), 5),
+              fontsize=10, frameon=False, labelcolor=TEXT_COLOR)
+    ax.tick_params(labelsize=6, colors=MUTED_TEXT)
+    for sp in ax.spines.values(): sp.set_color(GRID_COLOR)
 
 def draw_release(ax, data, pts):
-    ax.set_facecolor("#FFFFFF")
+    ax.set_facecolor(PANEL_COLOR)
     all_rs = data["RelSide"].dropna(); all_rh = data["RelHeight"].dropna()
     for pt in pts:
         valid = data.loc[data["PitchType"] == pt, ["RelSide", "RelHeight"]].dropna()
         if not valid.empty:
             ax.scatter(valid["RelSide"].mean(), valid["RelHeight"].mean(),
-                       c=pc(pt), s=90, alpha=0.95, edgecolors="white", linewidths=1.2, zorder=5)
+                       c=pc(pt), s=80, alpha=0.95, edgecolors="black", linewidths=0.8, zorder=5)
     if not all_rs.empty and not all_rh.empty:
         avg_rs, avg_rh = all_rs.mean(), all_rh.mean()
-        ax.axhline(avg_rh, color="#8B7355", lw=0.8, ls="--", alpha=0.6, zorder=3)
-        ax.axvline(avg_rs, color="#8B7355", lw=0.8, ls="--", alpha=0.6, zorder=3)
+        ax.axhline(avg_rh, color=ACCENT_COLOR, lw=1, alpha=0.5, zorder=3)
+        ax.axvline(avg_rs, color=ACCENT_COLOR, lw=1, alpha=0.5, zorder=3)
         ax.text(avg_rs, avg_rh - 0.3, f"Avg ({avg_rs:.1f}, {avg_rh:.1f})",
-                ha="center", va="top", fontsize=8, color="#333333",
-                fontweight="bold", bbox=dict(boxstyle="round,pad=0.25", fc="white",
-                ec="#aaaaaa", alpha=0.95, lw=0.4))
-    ax.axvline(0, color="#999999", lw=0.5, ls="--", alpha=0.3)
-    ax.set_xlabel("Release Side (ft)", fontsize=10, color="#333333")
-    ax.set_ylabel("Release Height (ft)", fontsize=10, color="#333333")
-    ax.set_title("Release Point", fontsize=13, fontweight="bold", color="#1a1a1a", pad=6)
-    ax.tick_params(labelsize=8, colors="#444444")
-    ax.grid(True, alpha=0.18, linewidth=0.4)
-    for sp in ax.spines.values(): sp.set_color("#cccccc")
+                ha="center", va="top", fontsize=9, color=ACCENT_COLOR, family="monospace",
+                fontweight="bold", bbox=dict(boxstyle="round,pad=0.2", fc=BG_COLOR,
+                ec=ACCENT_COLOR, alpha=0.9, lw=0.5))
+    ax.axvline(0, color=MUTED_TEXT, lw=0.5, ls="--", alpha=0.3)
+    ax.set_xlabel("Release Side (ft)", fontsize=11, color=MUTED_TEXT)
+    ax.set_ylabel("Release Height (ft)", fontsize=11, color=MUTED_TEXT)
+    ax.set_title("Release Point", fontsize=13, fontweight="bold", color=TEXT_COLOR, pad=6)
+    ax.tick_params(labelsize=6, colors=MUTED_TEXT)
+    for sp in ax.spines.values(): sp.set_color(GRID_COLOR)
     if not all_rs.empty and not all_rh.empty:
         rs_c, rh_c = all_rs.mean(), all_rh.mean()
         rs_std = all_rs.std() if len(all_rs) > 1 else 0.3
@@ -972,9 +865,7 @@ def draw_release(ax, data, pts):
 # ===========================================================================
 # DATA LOADING — reads from data/by_date/ partitioned parquets
 # ===========================================================================
-DATA_DIR    = os.path.join(os.path.dirname(os.path.abspath(__file__)) if "__file__" in dir() else os.getcwd(), "data")
-BY_DATE_DIR = os.path.join(DATA_DIR, "by_date")
-INDEX_PATH  = os.path.join(DATA_DIR, "index.parquet")
+from config import DATA_DIR, BY_DATE_DIR, INDEX_PATH
 
 PT_NORMALIZE = {
     # ── Auto names → canonical ──
@@ -1000,7 +891,7 @@ def _prep_df(df):
     return df
 
 @st.cache_data(ttl=3600)
-def load_index(_cache_version="v13"):
+def load_index(_cache_version="v10"):
     """Load lightweight game index — used for sidebar dropdowns. Tiny and fast.
     _cache_version: bump this string to bust the Streamlit Cloud cache."""
     # Support both new index.parquet and legacy pitches.parquet
@@ -1031,7 +922,7 @@ def _to_date(x):
         return x
 
 @st.cache_data(ttl=300)
-def load_team_data(team_name, date_from, date_to, _cache_version="v9"):
+def load_team_data(team_name, date_from, date_to, _cache_version="v6"):
     """
     Load only the date files where the selected team played in the date range.
     Returns ~5-50MB instead of the full 800MB+ season dataset.
@@ -1304,25 +1195,6 @@ def identify_team_code(df, team_name, ht, at):
 # ===========================================================================
 # GENERATE ONE PITCHER PAGE
 # ===========================================================================
-def _display_name(name):
-    """Convert 'Last, First' -> 'First Last' for display."""
-    try:
-        s = str(name)
-        if "," in s:
-            last, first = [x.strip() for x in s.split(",", 1)]
-            if first:
-                return f"{first} {last}"
-    except Exception:
-        pass
-    return str(name)
-
-def _hand_label(df):
-    """Return 'LHP' or 'RHP' inferred from release side."""
-    try:
-        return "LHP" if _infer_hand_from_relside(df) == "L" else "RHP"
-    except Exception:
-        return ""
-
 def generate_pitcher_page(p, pname, gdate, opp):
     N = len(p)
     if N == 0: return None
@@ -1349,45 +1221,37 @@ def generate_pitcher_page(p, pname, gdate, opp):
 
     pts = p["PitchType"].value_counts().index.tolist()
 
-    fig = plt.figure(figsize=(18, 13), facecolor="white")
+    fig = plt.figure(figsize=(26, 16), facecolor=BG_COLOR)
     gs = GridSpec(4, 4, figure=fig,
-                  height_ratios=[.07, .025, .42, .49],
+                  height_ratios=[.06, .02, .42, .50],
                   width_ratios=[1, 1, 1, 0.65],
-                  hspace=.18, wspace=.20,
-                  top=0.97, bottom=0.02, left=0.03, right=0.97)
+                  hspace=.18, wspace=.18,
+                  top=0.96, bottom=0.02, left=0.03, right=0.97)
 
-    # ── Header (Munn style: name, hand • opponent, date) ──
-    hand = _hand_label(p)
-    ax = fig.add_subplot(gs[0, :]); ax.set_facecolor("white"); ax.axis("off")
-    ax.text(.5, .80, _display_name(pname), ha="center", va="center", fontsize=32,
+    ax = fig.add_subplot(gs[0, :]); ax.set_facecolor(BG_COLOR); ax.axis("off")
+    ax.text(.5, .74, _display_name(pname), ha="center", va="center", fontsize=30,
             fontweight="bold", color="#1a1a1a")
-    sub_bits = [b for b in [hand, f"vs {opp}"] if b]
-    ax.text(.5, .38, "  \u2022  ".join(sub_bits), ha="center", va="center",
-            fontsize=14, color="#555555")
-    ax.text(.5, .06, f"{gdate:%B %d, %Y}", ha="center", va="center",
-            fontsize=11, style="italic", color="#777777")
+    _sub = "   •   ".join([b for b in [_hand_label(p), f"vs {opp}", f"{gdate:%b %d, %Y}"] if b])
+    ax.text(.5, .18, _sub, ha="center", va="center", fontsize=14, color="#555")
 
-    # ── Stats banner ──
-    ax = fig.add_subplot(gs[1, :]); ax.set_facecolor("white"); ax.axis("off")
-    stats_str = (f"IP {ip}    \u2022    PA {pa}    \u2022    P {N}    \u2022    "
-                 f"H {hits + hr}    \u2022    K {k}    \u2022    BB {bb}    \u2022    HBP {hbp}    \u2022    HR {hr}    \u2022    "
+    ax = fig.add_subplot(gs[1, :]); ax.set_facecolor(BG_COLOR); ax.axis("off")
+    stats_str = (f"IP {ip}   ·   PA {pa}   ·   P {N}   ·   "
+                 f"H {hits + hr}   ·   K {k}   ·   BB {bb}   ·   HBP {hbp}   ·   HR {hr}   ·   "
                  f"STR% {spct}%")
-    ax.text(.5, .68, stats_str, ha="center", va="center", fontsize=14,
-            color="#1a1a1a", fontweight="bold")
-    legend_str = "\u25cb Ball     \u25cf Called Strike     \u2715 Swinging Strike     \u25b2 Foul     \u25a0 In Play"
-    ax.text(.5, .02, legend_str, ha="center", va="center", fontsize=10.5,
-            color="#777777")
+    ax.text(.5, .65, stats_str, ha="center", va="center", fontsize=14,
+            color=TEXT_COLOR, family="monospace", fontweight="bold")
+    legend_str = "○ Ball    ● Called Strike    ✕ Swinging Strike    ▲ Foul    ■ In Play"
+    ax.text(.5, .05, legend_str, ha="center", va="center", fontsize=11,
+            color=TEXT_COLOR, family="monospace")
 
-    # ── Panels ──
     lhb = p[p["BatterSide"] == "Left"]
     ax_l = fig.add_subplot(gs[2, 0]); draw_zone(ax_l, lhb, f"vs LHB ({len(lhb)})", pts)
     rhb = p[p["BatterSide"] == "Right"]
     ax_r = fig.add_subplot(gs[2, 1]); draw_zone(ax_r, rhb, f"vs RHB ({len(rhb)})", pts)
-    ax_m = fig.add_subplot(gs[2, 2]); draw_mov(ax_m, p, pts)
+    ax_m = fig.add_subplot(gs[2, 2]); _ss_plot_breaks(ax_m, p, pts)
     ax_rp = fig.add_subplot(gs[2, 3]); draw_release(ax_rp, p, pts)
 
-    # ── Table (all existing columns + grading preserved) ──
-    ax_t = fig.add_subplot(gs[3, :]); ax_t.set_facecolor("white"); ax_t.axis("off")
+    ax_t = fig.add_subplot(gs[3, :]); ax_t.set_facecolor(BG_COLOR); ax_t.axis("off")
     trows = []
     grade_cells = {}
     for ri, pt in enumerate(pts):
@@ -1417,7 +1281,7 @@ def generate_pitcher_page(p, pname, gdate, opp):
                       fmt(s["SpinRate"], d=0),
                       fmt(s["InducedVertBreak"]), fmt(s["HorzBreak"]),
                       fmt(s["Extension"]), fmt(s["RelHeight"]), fmt(s["RelSide"]),
-                      fmt(s["VertApprAngle"]),
+                      havaa_fmt(s, pt),
                       xwoba_str, zone_str, whiff_str, chase_str, iz_whiff_str])
 
         data_row = ri + 1
@@ -1441,28 +1305,28 @@ def generate_pitcher_page(p, pname, gdate, opp):
                   all_xwoba, f"{zpct}%", all_whiff, f"{cpct}%", f"{izwp}%"])
 
     cols = ["Count", "Usage%", "Stuff+", "Avg\nVelo", "Max\nVelo", "Avg\nSpin",
-            "IVB", "HB", "Ext", "RelH", "RelS", "VAA",
+            "IVB", "HB", "Ext", "RelH", "RelS", "HAVAA",
             "xwOBA", "Zone%", "Whiff%", "Chase%", "IZ\nWhiff%"]
 
     tbl = ax_t.table(cellText=[r[1:] for r in trows], rowLabels=[r[0] for r in trows],
                      colLabels=cols, loc="center", cellLoc="center")
     tbl.auto_set_font_size(False)
     tbl.set_fontsize(12)
-    tbl.scale(1, 2.6)
+    tbl.scale(1, 2.8)
 
     for (row, col), cell in tbl.get_celld().items():
-        cell.set_edgecolor("#cccccc"); cell.set_linewidth(0.4)
+        cell.set_edgecolor(GRID_COLOR); cell.set_linewidth(0.6)
         if row == 0:
-            cell.set_facecolor("#2C2C2C")
-            cell.set_text_props(fontweight="bold", color="white", fontsize=12)
+            cell.set_facecolor("#1E1E2E")
+            cell.set_text_props(fontweight="bold", color="white", fontfamily="monospace", fontsize=12)
         elif col == -1:
             pitch_name = cell.get_text().get_text()
             if pitch_name == "All":
-                cell.set_facecolor("#FFFFFF")
-                cell.set_text_props(fontweight="bold", color="#1a1a1a", fontsize=13)
+                cell.set_facecolor("#E8E8E8")
+                cell.set_text_props(fontweight="bold", color=TEXT_COLOR, fontfamily="monospace", fontsize=13)
             else:
                 cell.set_facecolor(pc(pitch_name))
-                cell.set_text_props(fontweight="bold", color="white", fontsize=13)
+                cell.set_text_props(fontweight="bold", color="white", fontfamily="monospace", fontsize=13)
         else:
             graded = False
             if (row, col) in grade_cells and row <= len(pts):
@@ -1470,18 +1334,18 @@ def generate_pitcher_page(p, pname, gdate, opp):
                 gc = grade_color(pt_name, stat_name, raw_val, higher_better)
                 if gc is not None:
                     cell.set_facecolor(gc)
-                    cell.set_text_props(color="#1a1a1a", fontweight="bold", fontsize=12)
+                    cell.set_text_props(color=TEXT_COLOR, fontfamily="monospace", fontweight="bold", fontsize=12)
                     graded = True
             if not graded:
                 if row == len(trows):
-                    cell.set_facecolor("#F2F2F2")
-                    cell.set_text_props(color="#1a1a1a", fontweight="bold", fontsize=12)
+                    cell.set_facecolor("#E8E8E8")
+                    cell.set_text_props(color=TEXT_COLOR, fontweight="bold", fontfamily="monospace", fontsize=12)
                 elif row % 2 == 0:
-                    cell.set_facecolor("#F7F7F7")
-                    cell.set_text_props(color="#1a1a1a", fontsize=12)
+                    cell.set_facecolor("#F4F6F9")
+                    cell.set_text_props(color=TEXT_COLOR, fontfamily="monospace", fontsize=12)
                 else:
                     cell.set_facecolor("#FFFFFF")
-                    cell.set_text_props(color="#1a1a1a", fontsize=12)
+                    cell.set_text_props(color=TEXT_COLOR, fontfamily="monospace", fontsize=12)
 
     return fig
 
@@ -1494,303 +1358,251 @@ def calc_fip(k, bb, hbp_ct, hr_ct, ip_str):
     if ip == 0: return 0.0
     return (13 * hr_ct + 3 * (bb + hbp_ct) - 2 * k) / ip + 3.10
 
-# Display-name overrides for the season summary (matches the Munn PDF look)
-SS_PITCH_DISPLAY = {
-    "Fastball":  "4-Seam",
-    "Cutter":    "Cutter",
-    "Curveball": "Curveball",
-    "Slider":    "Slider",
-    "ChangeUp":  "Changeup",
-    "Splitter":  "Splitter",
-    "Sinker":    "Sinker",
-    "Sweeper":   "Sweeper",
-    "Knuckleball": "Knuckleball",
-    "Other":     "Other",
-}
-
-def _ss_is_swing(df):
-    return df["PitchCall"].isin(SWING_CALLS)
-
-def _ss_plot_velo_distribution(ax, sm, pitch_order):
-    """Ridge-style KDE per pitch type (Munn style)."""
-    n = len(pitch_order)
-    offset_step = 1.0
-    all_velos = sm["RelSpeed"].dropna()
-    x_min = max(60, int(all_velos.min()) - 3) if len(all_velos) > 0 else 70
-    x_max = min(105, int(all_velos.max()) + 3) if len(all_velos) > 0 else 100
-
-    for i, pt in enumerate(pitch_order):
-        velos = sm[sm["PitchType"] == pt]["RelSpeed"].dropna().values
-        base_y = (n - 1 - i) * offset_step
-        label = SS_PITCH_DISPLAY.get(pt, pt)
-        if len(velos) < 2:
-            if len(velos):
-                ax.plot([velos[0], velos[0]], [base_y, base_y + 0.6],
-                        color=pc(pt), lw=1.2)
-            ax.text(x_min - 1, base_y + 0.15, label,
-                    fontsize=7, ha="right", va="center", color="#333")
-            continue
-        try:
-            kde = gaussian_kde(velos, bw_method=0.35)
-        except Exception:
-            continue
-        xs = np.linspace(x_min, x_max, 300)
-        ys = kde(xs); ys = ys / ys.max() * 0.85
-        ax.fill_between(xs, base_y, base_y + ys, color=pc(pt), alpha=0.55,
-                        edgecolor=pc(pt), linewidth=0.9)
-        mean_v = velos.mean()
-        idx = np.argmin(np.abs(xs - mean_v))
-        ax.plot([mean_v, mean_v], [base_y, base_y + ys[idx]],
-                color=pc(pt), lw=0.8, linestyle=":")
-        ax.text(x_min - 1, base_y + 0.15, label,
-                fontsize=7, ha="right", va="center", color="#333")
-
-    ax.set_xlim(x_min - 4, x_max)
-    ax.set_ylim(-0.2, n * offset_step)
-    ax.set_xlabel("Velocity (mph)", fontsize=8)
-    ax.set_yticks([])
-    ax.set_title("Pitch Velocity Distribution", fontsize=11, fontweight="bold", pad=6)
-    ax.tick_params(axis="x", labelsize=7)
-    for spine in ["top", "right", "left"]:
-        ax.spines[spine].set_visible(False)
-    ax.grid(True, axis="x", alpha=0.15, linewidth=0.4)
-
-def _ss_plot_breaks(ax, sm, pitch_order):
-    """One large dot per pitch type at the avg movement (Munn style)."""
-    for pt in pitch_order:
-        sub = sm[sm["PitchType"] == pt]
-        if len(sub) == 0:
-            continue
-        ax.scatter(sub["HorzBreak"].mean(), sub["InducedVertBreak"].mean(),
-                   color=pc(pt), s=420, alpha=0.92,
-                   edgecolors="white", linewidths=1.6, zorder=3,
-                   label=SS_PITCH_DISPLAY.get(pt, pt))
-
-    ax.axhline(0, color="#8B7355", linewidth=0.8, linestyle="--", alpha=0.7)
-    ax.axvline(0, color="#8B7355", linewidth=0.8, linestyle="--", alpha=0.7)
-    ax.set_xlim(-25, 25)
-    ax.set_ylim(-25, 25)
-    ax.set_xlabel("Horizontal Break (in)", fontsize=8)
-    ax.set_ylabel("Induced Vertical Break (in)", fontsize=8)
-    ax.set_title("Pitch Breaks", fontsize=11, fontweight="bold", pad=6)
-    ax.tick_params(axis="both", labelsize=8, colors="#222")
-    ax.grid(True, alpha=0.18, linewidth=0.4)
-    ax.set_aspect("equal")
-    ax.text(-23, -22, "\u2190 Glove Side", fontsize=7, alpha=0.7,
-            bbox=dict(boxstyle="round,pad=0.25", facecolor="white",
-                      edgecolor="#aaa", linewidth=0.4))
-    ax.text(11, -22, "Arm Side \u2192", fontsize=7, alpha=0.7,
-            bbox=dict(boxstyle="round,pad=0.25", facecolor="white",
-                      edgecolor="#aaa", linewidth=0.4))
-
-def _ss_plot_usage(ax, sm, pitch_order):
-    """Back-to-back horizontal bars — vs LHH | vs RHH (Munn style)."""
-    lhh = sm[sm["BatterSide"] == "Left"]
-    rhh = sm[sm["BatterSide"] == "Right"]
-    pitches_present = [p for p in pitch_order if (sm["PitchType"] == p).any()]
-    y_positions = np.arange(len(pitches_present))[::-1]
-
-    bar_h = 0.7
-    for i, pt in enumerate(pitches_present):
-        y = y_positions[i]
-        color = pc(pt)
-        lp = 100 * (lhh["PitchType"] == pt).sum() / len(lhh) if len(lhh) else 0
-        rp = 100 * (rhh["PitchType"] == pt).sum() / len(rhh) if len(rhh) else 0
-        ax.barh(y, -lp, height=bar_h, color=color, edgecolor="white", linewidth=0.6)
-        ax.barh(y,  rp, height=bar_h, color=color, edgecolor="white", linewidth=0.6)
-        if lp > 0:
-            ax.text(-lp - 2, y, f"{lp:.1f}%", va="center", ha="right",
-                    fontsize=7, color="#333")
-        if rp > 0:
-            ax.text(rp + 2, y, f"{rp:.1f}%", va="center", ha="left",
-                    fontsize=7, color="#333")
-
-    ax.axvline(0, color="black", linewidth=0.8)
-    ax.set_xlim(-100, 100)
-    ax.set_ylim(-0.7, len(pitches_present) + 0.3)
-    ax.set_yticks([])
-    ax.set_xticks([-100, -75, -50, -25, 0, 25, 50, 75, 100])
-    ax.set_xticklabels(["100%", "75%", "50%", "25%", "0%", "25%", "50%", "75%", "100%"],
-                       fontsize=7)
-    ax.set_xlabel("Usage (%)", fontsize=8)
-    ax.set_title("Pitch Usage", fontsize=11, fontweight="bold", pad=18)
-    ax.text(-50, len(pitches_present) - 0.15, "vs LHH", ha="center", va="bottom",
-            fontsize=8, fontweight="bold", color="#555")
-    ax.text(50, len(pitches_present) - 0.15, "vs RHH", ha="center", va="bottom",
-            fontsize=8, fontweight="bold", color="#555")
-    for spine in ["top", "right", "left"]:
-        ax.spines[spine].set_visible(False)
-    ax.grid(True, axis="x", alpha=0.15, linewidth=0.4)
-
-def _ss_build_table(sm, pitch_order):
-    rows = []
-    total = len(sm)
-    for pt in pitch_order:
-        sub = sm[sm["PitchType"] == pt]
-        if len(sub) == 0:
-            continue
-        cnt = len(sub)
-        iz_full = in_zone(sub)
-        oz_full = sub[~iz_full]
-        chase_pct = 100 * _ss_is_swing(oz_full).sum() / len(oz_full) if len(oz_full) > 0 else 0.0
-        swings_full = _ss_is_swing(sub)
-        n_sw = swings_full.sum()
-        whiff_pct = 100 * (sub[swings_full]["PitchCall"] == "StrikeSwinging").sum() / n_sw if n_sw > 0 else 0.0
-        zone_pct = 100 * iz_full.sum() / cnt if cnt else np.nan
-        rows.append({
-            "Pitch":    SS_PITCH_DISPLAY.get(pt, pt),
-            "Color":    pc(pt),
-            "Count":    cnt,
-            "Pitch%":   100 * cnt / total,
-            "Velocity": sub["RelSpeed"].mean(),
-            "Max":      sub["RelSpeed"].max(),
-            "iVB":      sub["InducedVertBreak"].mean(),
-            "HB":       sub["HorzBreak"].mean(),
-            "Spin":     sub["SpinRate"].mean(),
-            "VAA":      sub["VertApprAngle"].mean(),
-            "vRel":     sub["RelHeight"].mean(),
-            "hRel":     sub["RelSide"].mean(),
-            "Ext":      sub["Extension"].mean(),
-            "Zone%":    zone_pct,
-            "Chase%":   chase_pct,
-            "Whiff%":   whiff_pct,
-        })
-
-    iz_all = in_zone(sm)
-    oz_all = sm[~iz_all]
-    chase_all = 100 * _ss_is_swing(oz_all).sum() / len(oz_all) if len(oz_all) > 0 else 0.0
-    swings_all = _ss_is_swing(sm)
-    n_sw_all = swings_all.sum()
-    whiff_all = 100 * (sm[swings_all]["PitchCall"] == "StrikeSwinging").sum() / n_sw_all if n_sw_all > 0 else 0.0
-    rows.append({
-        "Pitch": "All", "Color": "#FFFFFF", "Count": total, "Pitch%": 100.0,
-        "Velocity": np.nan, "Max": np.nan, "iVB": np.nan, "HB": np.nan,
-        "Spin": np.nan, "VAA": np.nan, "vRel": np.nan, "hRel": np.nan,
-        "Ext": sm["Extension"].mean(),
-        "Zone%": 100 * iz_all.sum() / total if total else np.nan,
-        "Chase%": chase_all, "Whiff%": whiff_all,
-    })
-    return pd.DataFrame(rows)
-
-def _ss_draw_table(ax, df):
-    ax.axis("off")
-    cols = ["Pitch Name", "Count", "Pitch%", "Velocity", "Max", "iVB", "HB", "Spin",
-            "VAA", "vRel", "hRel", "Ext.", "Zone%", "Chase%", "Whiff%"]
-    df_keys = ["Pitch", "Count", "Pitch%", "Velocity", "Max", "iVB", "HB", "Spin",
-               "VAA", "vRel", "hRel", "Ext", "Zone%", "Chase%", "Whiff%"]
-    fmts = {
-        "Count":    lambda v: f"{int(v)}",
-        "Pitch%":   lambda v: f"{v:.1f}%",
-        "Velocity": lambda v: f"{v:.1f}" if pd.notna(v) else "—",
-        "Max":      lambda v: f"{v:.1f}" if pd.notna(v) else "—",
-        "iVB":      lambda v: f"{v:.1f}" if pd.notna(v) else "—",
-        "HB":       lambda v: f"{v:.1f}" if pd.notna(v) else "—",
-        "Spin":     lambda v: f"{v:.0f}" if pd.notna(v) else "—",
-        "VAA":      lambda v: f"{v:.1f}" if pd.notna(v) else "—",
-        "vRel":     lambda v: f"{v:.1f}" if pd.notna(v) else "—",
-        "hRel":     lambda v: f"{v:.1f}" if pd.notna(v) else "—",
-        "Ext":      lambda v: f"{v:.1f}" if pd.notna(v) else "—",
-        "Zone%":    lambda v: f"{v:.1f}%" if pd.notna(v) else "—",
-        "Chase%":   lambda v: f"{v:.1f}%" if pd.notna(v) else "—",
-        "Whiff%":   lambda v: f"{v:.1f}%" if pd.notna(v) else "—",
-    }
-
-    cell_text, cell_colors = [], []
-    for _, row in df.iterrows():
-        line, clrs = [], []
-        for c, kk in zip(cols, df_keys):
-            if kk == "Pitch":
-                line.append(row["Pitch"])
-                clrs.append(row["Color"] if row["Pitch"] != "All" else "#FFFFFF")
-            else:
-                v = row[kk]
-                line.append(fmts[kk](v) if kk in fmts else str(v))
-                clrs.append("#FFFFFF")
-        cell_text.append(line)
-        cell_colors.append(clrs)
-
-    header_colors = ["#2C2C2C"] * len(cols)
-    table = ax.table(cellText=cell_text, colLabels=cols,
-                     cellColours=cell_colors, colColours=header_colors,
-                     cellLoc="center", loc="center")
-    table.auto_set_font_size(False)
-    table.set_fontsize(8)
-    table.scale(1, 1.55)
-
-    for j in range(len(cols)):
-        cell = table[(0, j)]
-        cell.set_text_props(color="white", fontweight="bold")
-        cell.set_edgecolor("#1a1a1a"); cell.set_linewidth(0.5)
-
-    n_rows = len(df)
-    for i in range(1, n_rows + 1):
-        for j in range(len(cols)):
-            cell = table[(i, j)]
-            cell.set_edgecolor("#cccccc"); cell.set_linewidth(0.4)
-            if j == 0:
-                # White bold text on colored pitch cells; dark on the All row
-                is_all = (df.iloc[i - 1]["Pitch"] == "All")
-                cell.set_text_props(fontweight="bold",
-                                    color="#1a1a1a" if is_all else "white")
-
-    widths = [1.5, 0.65, 0.75, 0.95, 0.7, 0.65, 0.65, 0.75, 0.65, 0.65, 0.65,
-              0.65, 0.8, 0.85, 0.85]
-    total_w = sum(widths)
-    for j, w in enumerate(widths):
-        for i in range(n_rows + 1):
-            table[(i, j)].set_width(w / total_w)
-
 def generate_season_summary(pitcher_name, outings, date_from, date_to):
-    """
-    One-page Munn-style season pitching summary:
-    header / velocity ridges / avg-movement breaks / usage bars / pitch table.
-    """
-    all_dfs = [p_df.copy() for p_df, gdate, opp in outings]
-    if not all_dfs:
-        return None
-    sm = pd.concat(all_dfs, ignore_index=True)
-    if len(sm) == 0:
-        return None
+    all_dfs = []
+    for p_df, gdate, opp in outings:
+        df_copy = p_df.copy()
+        df_copy["_game_date"] = gdate
+        df_copy["_opp"] = opp
+        all_dfs.append(df_copy)
+    p = pd.concat(all_dfs, ignore_index=True)
+    N = len(p)
+    if N == 0: return None
 
-    # Order pitch types fastest -> slowest (matches the reference layout)
-    pts_present = [pt for pt in sm["PitchType"].dropna().unique() if pt]
-    pitch_order = sorted(
-        pts_present,
-        key=lambda x: sm.loc[sm["PitchType"] == x, "RelSpeed"].median()
-        if not sm.loc[sm["PitchType"] == x, "RelSpeed"].dropna().empty else 0,
-        reverse=True,
-    )
+    total_ip_outs = 0; total_k = 0; total_bb = 0
+    total_hbp = 0; total_hr = 0; total_hits = 0; total_pa = 0
+    for p_df, gdate, opp in outings:
+        ip_s = calc_ip(p_df)
+        parts = ip_s.split(".")
+        total_ip_outs += int(parts[0]) * 3 + int(parts[1])
+        total_k += int((p_df["KorBB"] == "Strikeout").sum())
+        total_bb += int((p_df["KorBB"] == "Walk").sum())
+        total_hbp += int((p_df["PitchCall"] == "HitByPitch").sum())
+        total_hr += int((p_df["PlayResult"] == "HomeRun").sum())
+        total_hits += int(p_df["PlayResult"].isin(["Single", "Double", "Triple"]).sum())
+        total_pa += calc_pa(p_df)
 
-    hand = _hand_label(sm)
-    display = _display_name(pitcher_name)
-    table_df = _ss_build_table(sm, pitch_order)
+    ip_full = total_ip_outs // 3; ip_rem = total_ip_outs % 3
+    ip_str = f"{ip_full}.{ip_rem}"
+    ip_float = ip_full + ip_rem / 3.0
+    whip = ((total_bb + total_hits + total_hr) / ip_float) if ip_float > 0 else 0
+    k_pct = (total_k / total_pa * 100) if total_pa > 0 else 0
+    bb_pct = (total_bb / total_pa * 100) if total_pa > 0 else 0
+    fip = calc_fip(total_k, total_bb, total_hbp, total_hr, ip_str)
 
-    fig = plt.figure(figsize=(11, 8.5), facecolor="white")
-    gs = GridSpec(nrows=3, ncols=3, figure=fig,
-                  height_ratios=[0.9, 3.0, 2.5],
-                  width_ratios=[1, 1, 1],
-                  left=0.045, right=0.965, top=0.96, bottom=0.045,
-                  hspace=0.45, wspace=0.30)
+    wh = p["PitchCall"] == "StrikeSwinging"
+    sw = p["PitchCall"].isin(SWING_CALLS)
+    iz = p["InZone"]; ooz = ~iz
+    zpct = round(iz.sum() / N * 100, 1)
+    wpct = round(wh.sum() / sw.sum() * 100, 1) if sw.sum() else 0
+    cpct = round((sw & ooz).sum() / ooz.sum() * 100, 1) if ooz.sum() else 0
+    iz_sw = (sw & iz).sum(); iz_wh_ct = (wh & iz).sum()
+    izwp = round(iz_wh_ct / iz_sw * 100, 1) if iz_sw else 0
+    pts = p["PitchType"].value_counts().index.tolist()
 
-    ax_hdr = fig.add_subplot(gs[0, :]); ax_hdr.axis("off")
-    ax_hdr.text(0.5, 0.92, display, ha="center", va="top",
-                fontsize=22, fontweight="bold", color="#1a1a1a")
-    sub_bits = [b for b in [hand, f"{len(outings)} outings"] if b]
-    ax_hdr.text(0.5, 0.58, "  \u2022  ".join(sub_bits), ha="center", va="top",
-                fontsize=10, color="#555")
-    ax_hdr.text(0.5, 0.38, "Season Pitching Summary", ha="center", va="top",
-                fontsize=13, fontweight="bold", color="#1a1a1a")
-    try:
-        season_label = f"{date_from:%b %d} \u2013 {date_to:%b %d, %Y}"
-    except Exception:
-        season_label = f"{date_from} \u2013 {date_to}"
-    ax_hdr.text(0.5, 0.18, season_label, ha="center", va="top",
-                fontsize=9, style="italic", color="#777")
+    fig = plt.figure(figsize=(26, 17), facecolor=BG_COLOR)
+    gs = GridSpec(4, 3, figure=fig,
+                  height_ratios=[.06, .04, .36, .54],
+                  width_ratios=[1, 1.2, 1.2],
+                  hspace=.22, wspace=.22,
+                  top=0.96, bottom=0.02, left=0.04, right=0.97)
 
-    _ss_plot_velo_distribution(fig.add_subplot(gs[1, 0]), sm, pitch_order)
-    _ss_plot_breaks(fig.add_subplot(gs[1, 1]), sm, pitch_order)
-    _ss_plot_usage(fig.add_subplot(gs[1, 2]), sm, pitch_order)
-    _ss_draw_table(fig.add_subplot(gs[2, :]), table_df)
+    ax = fig.add_subplot(gs[0, :]); ax.set_facecolor(BG_COLOR); ax.axis("off")
+    ax.text(.5, .7, pitcher_name.upper(), ha="center", va="center", fontsize=34,
+            fontweight="bold", color=TEXT_COLOR, family="monospace")
+    ax.text(.5, .1, "Season Pitching Summary", ha="center", va="center",
+            fontsize=16, color=ACCENT_COLOR, family="monospace")
+
+    ax = fig.add_subplot(gs[1, :]); ax.set_facecolor(BG_COLOR); ax.axis("off")
+    outing_details = []
+    for p_df, gdate, opp in outings:
+        o_ip = calc_ip(p_df)
+        o_k = int((p_df["KorBB"] == "Strikeout").sum())
+        o_bb = int((p_df["KorBB"] == "Walk").sum())
+        outing_details.append(f"{gdate} vs {opp}: {o_ip}IP {o_k}K {o_bb}BB")
+
+    banner = (f"IP {ip_str}   ·   FIP {fip:.2f}   ·   WHIP {whip:.2f}   ·   "
+              f"K% {k_pct:.1f}%   ·   BB% {bb_pct:.1f}%   ·   K-BB% {k_pct - bb_pct:.1f}%   ·   "
+              f"PA {total_pa}   ·   P {N}   ·   H {total_hits + total_hr}   ·   HR {total_hr}   ·   "
+              f"K {total_k}   ·   BB {total_bb}   ·   {len(outings)} outing(s)")
+    ax.text(.5, .7, banner, ha="center", va="center", fontsize=14, color=TEXT_COLOR, family="monospace", fontweight="bold")
+    ax.text(.5, .2, f"{date_from} to {date_to}     |     " + "  /  ".join(outing_details),
+            ha="center", va="center", fontsize=11, color=MUTED_TEXT, family="monospace")
+
+    ax_velo = fig.add_subplot(gs[2, 0]); ax_velo.set_facecolor(PANEL_COLOR)
+    pt_velo_sorted = sorted(pts, key=lambda x: p[p["PitchType"] == x]["RelSpeed"].median()
+                            if not p[p["PitchType"] == x]["RelSpeed"].dropna().empty else 0, reverse=True)
+    for i, pt in enumerate(pt_velo_sorted):
+        velos = p.loc[p["PitchType"] == pt, "RelSpeed"].dropna()
+        if len(velos) < 3: continue
+        try:
+            kde = gaussian_kde(velos, bw_method=0.3)
+            x_range = np.linspace(velos.min() - 3, velos.max() + 3, 200)
+            density = kde(x_range)
+            density = density / density.max() * 0.38
+            ax_velo.fill_betweenx(i + density, x_range, i - density, alpha=0.7, color=pc(pt))
+            ax_velo.plot(x_range, i + density, color="black", lw=0.4)
+            ax_velo.plot(x_range, i - density, color="black", lw=0.4)
+            med = velos.median()
+            ax_velo.plot([med, med], [i - 0.3, i + 0.3], color="black", lw=1, ls="--", alpha=0.5)
+        except:
+            pass
+    ax_velo.set_yticks(range(len(pt_velo_sorted)))
+    ax_velo.set_yticklabels(pt_velo_sorted, fontsize=12, fontfamily="monospace")
+    ax_velo.set_xlabel("Velocity (mph)", fontsize=12, color=MUTED_TEXT)
+    ax_velo.set_title("Velocity Distribution", fontsize=14, fontweight="bold", color=TEXT_COLOR, pad=6)
+    ax_velo.tick_params(labelsize=6, colors=MUTED_TEXT)
+    for sp in ax_velo.spines.values(): sp.set_color(GRID_COLOR)
+
+    ax_mov = fig.add_subplot(gs[2, 1]); ax_mov.set_facecolor(PANEL_COLOR)
+    ax_mov.axhline(0, color=GRID_COLOR, ls="-", lw=1, zorder=1)
+    ax_mov.axvline(0, color=GRID_COLOR, ls="-", lw=1, zorder=1)
+    for r in [5, 10, 15, 20]:
+        ax_mov.add_patch(plt.Circle((0, 0), r, fill=False, ec=GRID_COLOR, lw=0.3, ls="--", alpha=0.3))
+    for pt in pts:
+        s = p[p["PitchType"] == pt]
+        hb = s["HorzBreak"].dropna(); ivb = s["InducedVertBreak"].dropna()
+        if not hb.empty and not ivb.empty:
+            ax_mov.scatter(hb.mean(), ivb.mean(), c=pc(pt), label=pt, s=120, alpha=0.95,
+                          edgecolors="black", linewidths=1, zorder=5, marker="o")
+    ax_mov.set_xlim(-25, 25); ax_mov.set_ylim(-25, 25)
+    ax_mov.set_xlabel("HB (in)", fontsize=12, color=MUTED_TEXT)
+    ax_mov.set_ylabel("IVB (in)", fontsize=12, color=MUTED_TEXT)
+    ax_mov.set_title("Avg Pitch Movement", fontsize=14, fontweight="bold", color=TEXT_COLOR, pad=6)
+    ax_mov.legend(loc="upper center", bbox_to_anchor=(.5, -.06), ncol=min(len(pts), 5),
+                  fontsize=12, frameon=False, labelcolor=TEXT_COLOR)
+    ax_mov.tick_params(labelsize=6, colors=MUTED_TEXT)
+    for sp in ax_mov.spines.values(): sp.set_color(GRID_COLOR)
+
+    ax_usage = fig.add_subplot(gs[2, 2]); ax_usage.set_facecolor(PANEL_COLOR)
+    lhb_data = p[p["BatterSide"] == "Left"]
+    rhb_data = p[p["BatterSide"] == "Right"]
+    lhb_total = len(lhb_data); rhb_total = len(rhb_data)
+    bar_pts = sorted(pts, key=lambda x: p[p["PitchType"] == x]["RelSpeed"].median()
+                     if not p[p["PitchType"] == x]["RelSpeed"].dropna().empty else 0, reverse=True)
+    y_pos = np.arange(len(bar_pts)); bar_h = 0.35
+    for i, pt in enumerate(bar_pts):
+        lhb_pct = len(lhb_data[lhb_data["PitchType"] == pt]) / lhb_total * 100 if lhb_total > 0 else 0
+        rhb_pct = len(rhb_data[rhb_data["PitchType"] == pt]) / rhb_total * 100 if rhb_total > 0 else 0
+        ax_usage.barh(i + bar_h / 2, -lhb_pct, bar_h, color=pc(pt), alpha=0.8, edgecolor="black", lw=0.3)
+        ax_usage.barh(i - bar_h / 2, rhb_pct, bar_h, color=pc(pt), alpha=0.8, edgecolor="black", lw=0.3)
+        if lhb_pct > 2:
+            ax_usage.text(-lhb_pct / 2, i + bar_h / 2, f"{lhb_pct:.1f}%", ha="center", va="center",
+                         fontsize=10, fontweight="bold", color="white")
+        if rhb_pct > 2:
+            ax_usage.text(rhb_pct / 2, i - bar_h / 2, f"{rhb_pct:.1f}%", ha="center", va="center",
+                         fontsize=10, fontweight="bold", color="white")
+    ax_usage.set_yticks(y_pos)
+    ax_usage.set_yticklabels(bar_pts, fontsize=12, fontfamily="monospace")
+    ax_usage.axvline(0, color="black", lw=1)
+    max_pct = max(60, max(
+        [len(lhb_data[lhb_data["PitchType"] == pt]) / max(lhb_total, 1) * 100 for pt in bar_pts] +
+        [len(rhb_data[rhb_data["PitchType"] == pt]) / max(rhb_total, 1) * 100 for pt in bar_pts]
+    ) + 10)
+    ax_usage.set_xlim(-max_pct, max_pct)
+    ticks = ax_usage.get_xticks()
+    ax_usage.set_xticklabels([f"{abs(t):.0f}%" for t in ticks], fontsize=10)
+    ax_usage.set_title("Pitch Usage", fontsize=14, fontweight="bold", color=TEXT_COLOR, pad=6)
+    ax_usage.text(-max_pct * 0.5, len(bar_pts) + 0.3, f"vs LHB ({lhb_total})", ha="center", fontsize=12,
+                 color=MUTED_TEXT, fontweight="bold")
+    ax_usage.text(max_pct * 0.5, len(bar_pts) + 0.3, f"vs RHB ({rhb_total})", ha="center", fontsize=12,
+                 color=MUTED_TEXT, fontweight="bold")
+    ax_usage.tick_params(labelsize=6, colors=MUTED_TEXT)
+    for sp in ax_usage.spines.values(): sp.set_color(GRID_COLOR)
+
+    ax_t = fig.add_subplot(gs[3, :]); ax_t.set_facecolor(BG_COLOR); ax_t.axis("off")
+    trows = []
+    grade_cells = {}
+    for ri, pt in enumerate(pts):
+        s = p[p["PitchType"] == pt]; n = len(s)
+        s_iz = in_zone(s); _sw = s["PitchCall"].isin(SWING_CALLS)
+        _wh = s["PitchCall"] == "StrikeSwinging"; _ooz = ~s_iz
+        _ooz_sw = (_sw & _ooz).sum(); _ooz_n = _ooz.sum()
+        _iz_sw = (_sw & s_iz).sum(); _iz_wh = (_wh & s_iz).sum()
+        iz_whiff_str = f"{_iz_wh / _iz_sw * 100:.1f}%" if _iz_sw else "—"
+        _sw_ct = _sw.sum()
+        whiff_val = _wh.sum() / _sw_ct * 100 if _sw_ct else None
+        whiff_str = f"{whiff_val:.1f}%" if whiff_val is not None else "—"
+        chase_val = _ooz_sw / _ooz_n * 100 if _ooz_n else None
+        chase_str = f"{chase_val:.1f}%" if chase_val is not None else "—"
+        xw = s["xwOBA"].dropna()
+        xwoba_val = xw.mean() if not xw.empty else None
+        xwoba_str = f"{xwoba_val:.3f}" if xwoba_val is not None else "—"
+        avg_velo_raw = s["RelSpeed"].dropna()
+        avg_velo_val = avg_velo_raw.mean() if not avg_velo_raw.empty else None
+        zone_val = s_iz.sum() / n * 100 if n else None
+        zone_str = f"{zone_val:.1f}%" if zone_val is not None else "—"
+        stuff_val = score_stuff_plus(s, pt, p)
+        stuff_str = f"{stuff_val:.0f}" if stuff_val is not None else "—"
+        trows.append([pt, n, f"{n / N * 100:.1f}%", stuff_str,
+                      fmt(s["RelSpeed"]), fmt(s["RelSpeed"], "max"),
+                      fmt(s["SpinRate"], d=0),
+                      fmt(s["InducedVertBreak"]), fmt(s["HorzBreak"]),
+                      fmt(s["Extension"]), fmt(s["RelHeight"]), fmt(s["RelSide"]),
+                      havaa_fmt(s, pt),
+                      xwoba_str, zone_str, whiff_str, chase_str, iz_whiff_str])
+
+        data_row = ri + 1
+        if avg_velo_val is not None:
+            grade_cells[(data_row, 3)] = (pt, "velo", avg_velo_val, True)
+        if xwoba_val is not None:
+            grade_cells[(data_row, 12)] = (pt, "xwoba", xwoba_val, False)
+        if zone_val is not None:
+            grade_cells[(data_row, 13)] = (pt, "zone_pct", zone_val, True)
+        if whiff_val is not None:
+            grade_cells[(data_row, 14)] = (pt, "whiff_pct", whiff_val, True)
+        if chase_val is not None:
+            grade_cells[(data_row, 15)] = (pt, "chase_pct", chase_val, True)
+
+    all_sw_ct = sw.sum()
+    all_whiff = f"{wh.sum() / all_sw_ct * 100:.1f}%" if all_sw_ct else "0%"
+    all_xw = p["xwOBA"].dropna()
+    all_xwoba = f"{all_xw.mean():.3f}" if not all_xw.empty else "—"
+    trows.append(["All", N, "100%", "—", "—", "—", "—", "—", "—",
+                  fmt(p["Extension"]), "—", "—", "—",
+                  all_xwoba, f"{zpct}%", all_whiff, f"{cpct}%", f"{izwp}%"])
+
+    cols = ["Count", "Usage%", "Stuff+", "Avg\nVelo", "Max\nVelo", "Avg\nSpin",
+            "IVB", "HB", "Ext", "RelH", "RelS", "HAVAA",
+            "xwOBA", "Zone%", "Whiff%", "Chase%", "IZ\nWhiff%"]
+    tbl = ax_t.table(cellText=[r[1:] for r in trows], rowLabels=[r[0] for r in trows],
+                     colLabels=cols, loc="center", cellLoc="center")
+    tbl.auto_set_font_size(False)
+    tbl.set_fontsize(12)
+    tbl.scale(1, 2.8)
+
+    for (row, col), cell in tbl.get_celld().items():
+        cell.set_edgecolor(GRID_COLOR); cell.set_linewidth(0.6)
+        if row == 0:
+            cell.set_facecolor("#1E1E2E")
+            cell.set_text_props(fontweight="bold", color="white", fontfamily="monospace", fontsize=12)
+        elif col == -1:
+            pitch_name = cell.get_text().get_text()
+            if pitch_name == "All":
+                cell.set_facecolor("#E8E8E8")
+                cell.set_text_props(fontweight="bold", color=TEXT_COLOR, fontfamily="monospace", fontsize=13)
+            else:
+                cell.set_facecolor(pc(pitch_name))
+                cell.set_text_props(fontweight="bold", color="white", fontfamily="monospace", fontsize=13)
+        else:
+            graded = False
+            if (row, col) in grade_cells and row <= len(pts):
+                pt_name, stat_name, raw_val, higher_better = grade_cells[(row, col)]
+                gc = grade_color(pt_name, stat_name, raw_val, higher_better)
+                if gc is not None:
+                    cell.set_facecolor(gc)
+                    cell.set_text_props(color=TEXT_COLOR, fontfamily="monospace", fontweight="bold")
+                    graded = True
+            if not graded:
+                if row == len(trows):
+                    cell.set_facecolor("#F0F0F0")
+                    cell.set_text_props(color=TEXT_COLOR, fontweight="bold", fontfamily="monospace")
+                elif row % 2 == 0:
+                    cell.set_facecolor("#F7F8FA")
+                    cell.set_text_props(color=TEXT_COLOR, fontfamily="monospace")
+                else:
+                    cell.set_facecolor("#FFFFFF")
+                    cell.set_text_props(color=TEXT_COLOR, fontfamily="monospace")
 
     return fig
 
@@ -2740,6 +2552,331 @@ def generate_hitter_page(batter_df, batter_name, game_date, opponent,
     ax_bb   = fig.add_subplot(gs[4, 0]); draw_batted_ball_profile(ax_bb, stats)
     ax_pull = fig.add_subplot(gs[4, 1]); draw_pull_oppo(ax_pull, stats)
     ax_blank = fig.add_subplot(gs[4, 2]); ax_blank.axis("off")
+
+    return fig
+
+
+# ============================================================================
+# ===========  MUNN-STYLE SEASON SUMMARY (matches reference PDF)  =============
+# ===========  Defined LAST so generate_season_summary overrides the  ========
+# ===========  older version above via `from utils import *`.         ========
+# ============================================================================
+
+def _display_name(name):
+    """Convert 'Last, First' -> 'First Last' for display."""
+    try:
+        s = str(name)
+        if "," in s:
+            last, first = [x.strip() for x in s.split(",", 1)]
+            if first:
+                return f"{first} {last}"
+    except Exception:
+        pass
+    return str(name)
+
+def _hand_label(df):
+    """Return 'LHP' or 'RHP' inferred from release side."""
+    try:
+        return "LHP" if _infer_hand_from_relside(df) == "L" else "RHP"
+    except Exception:
+        return ""
+
+# Display-name overrides for the season summary (matches the Munn PDF look)
+SS_PITCH_DISPLAY = {
+    "Fastball":  "4-Seam",
+    "Cutter":    "Cutter",
+    "Curveball": "Curveball",
+    "Slider":    "Slider",
+    "ChangeUp":  "Changeup",
+    "Splitter":  "Splitter",
+    "Sinker":    "Sinker",
+    "Sweeper":   "Sweeper",
+    "Knuckleball": "Knuckleball",
+    "Other":     "Other",
+}
+
+def _ss_is_swing(df):
+    return df["PitchCall"].isin(SWING_CALLS)
+
+def _ss_plot_velo_distribution(ax, sm, pitch_order):
+    """Ridge-style KDE per pitch type (Munn style)."""
+    n = len(pitch_order)
+    offset_step = 1.0
+    all_velos = sm["RelSpeed"].dropna()
+    x_min = max(60, int(all_velos.min()) - 3) if len(all_velos) > 0 else 70
+    x_max = min(105, int(all_velos.max()) + 3) if len(all_velos) > 0 else 100
+
+    for i, pt in enumerate(pitch_order):
+        velos = sm[sm["PitchType"] == pt]["RelSpeed"].dropna().values
+        base_y = (n - 1 - i) * offset_step
+        label = SS_PITCH_DISPLAY.get(pt, pt)
+        if len(velos) < 2:
+            if len(velos):
+                ax.plot([velos[0], velos[0]], [base_y, base_y + 0.6],
+                        color=pc(pt), lw=1.2)
+            ax.text(x_min - 1, base_y + 0.15, label,
+                    fontsize=7, ha="right", va="center", color="#333")
+            continue
+        try:
+            kde = gaussian_kde(velos, bw_method=0.35)
+        except Exception:
+            continue
+        xs = np.linspace(x_min, x_max, 300)
+        ys = kde(xs); ys = ys / ys.max() * 0.85
+        ax.fill_between(xs, base_y, base_y + ys, color=pc(pt), alpha=0.55,
+                        edgecolor=pc(pt), linewidth=0.9)
+        mean_v = velos.mean()
+        idx = np.argmin(np.abs(xs - mean_v))
+        ax.plot([mean_v, mean_v], [base_y, base_y + ys[idx]],
+                color=pc(pt), lw=0.8, linestyle=":")
+        ax.text(x_min - 1, base_y + 0.15, label,
+                fontsize=7, ha="right", va="center", color="#333")
+
+    ax.set_xlim(x_min - 4, x_max)
+    ax.set_ylim(-0.2, n * offset_step)
+    ax.set_xlabel("Velocity (mph)", fontsize=8)
+    ax.set_yticks([])
+    ax.set_title("Pitch Velocity Distribution", fontsize=11, fontweight="bold", pad=6)
+    ax.tick_params(axis="x", labelsize=7)
+    for spine in ["top", "right", "left"]:
+        ax.spines[spine].set_visible(False)
+    ax.grid(True, axis="x", alpha=0.15, linewidth=0.4)
+
+def _ss_plot_breaks(ax, sm, pitch_order):
+    """One large dot per pitch type at the avg movement (Munn style)."""
+    for pt in pitch_order:
+        sub = sm[sm["PitchType"] == pt]
+        if len(sub) == 0:
+            continue
+        ax.scatter(sub["HorzBreak"].mean(), sub["InducedVertBreak"].mean(),
+                   color=pc(pt), s=420, alpha=0.92,
+                   edgecolors="white", linewidths=1.6, zorder=3,
+                   label=SS_PITCH_DISPLAY.get(pt, pt))
+
+    ax.axhline(0, color="#8B7355", linewidth=0.8, linestyle="--", alpha=0.7)
+    ax.axvline(0, color="#8B7355", linewidth=0.8, linestyle="--", alpha=0.7)
+    ax.set_xlim(-25, 25)
+    ax.set_ylim(-25, 25)
+    ax.set_xlabel("Horizontal Break (in)", fontsize=8)
+    ax.set_ylabel("Induced Vertical Break (in)", fontsize=8)
+    ax.set_title("Pitch Breaks", fontsize=11, fontweight="bold", pad=6)
+    ax.tick_params(axis="both", labelsize=8, colors="#222")
+    ax.grid(True, alpha=0.18, linewidth=0.4)
+    ax.set_aspect("equal")
+    ax.text(-23, -22, "← Glove Side", fontsize=7, alpha=0.7,
+            bbox=dict(boxstyle="round,pad=0.25", facecolor="white",
+                      edgecolor="#aaa", linewidth=0.4))
+    ax.text(11, -22, "Arm Side →", fontsize=7, alpha=0.7,
+            bbox=dict(boxstyle="round,pad=0.25", facecolor="white",
+                      edgecolor="#aaa", linewidth=0.4))
+
+def _ss_plot_usage(ax, sm, pitch_order):
+    """Back-to-back horizontal bars — vs LHH | vs RHH (Munn style)."""
+    lhh = sm[sm["BatterSide"] == "Left"]
+    rhh = sm[sm["BatterSide"] == "Right"]
+    pitches_present = [p for p in pitch_order if (sm["PitchType"] == p).any()]
+    y_positions = np.arange(len(pitches_present))[::-1]
+
+    bar_h = 0.7
+    for i, pt in enumerate(pitches_present):
+        y = y_positions[i]
+        color = pc(pt)
+        lp = 100 * (lhh["PitchType"] == pt).sum() / len(lhh) if len(lhh) else 0
+        rp = 100 * (rhh["PitchType"] == pt).sum() / len(rhh) if len(rhh) else 0
+        ax.barh(y, -lp, height=bar_h, color=color, edgecolor="white", linewidth=0.6)
+        ax.barh(y,  rp, height=bar_h, color=color, edgecolor="white", linewidth=0.6)
+        if lp > 0:
+            ax.text(-lp - 2, y, f"{lp:.1f}%", va="center", ha="right",
+                    fontsize=7, color="#333")
+        if rp > 0:
+            ax.text(rp + 2, y, f"{rp:.1f}%", va="center", ha="left",
+                    fontsize=7, color="#333")
+
+    ax.axvline(0, color="black", linewidth=0.8)
+    ax.set_xlim(-100, 100)
+    ax.set_ylim(-0.7, len(pitches_present) + 0.3)
+    ax.set_yticks([])
+    ax.set_xticks([-100, -75, -50, -25, 0, 25, 50, 75, 100])
+    ax.set_xticklabels(["100%", "75%", "50%", "25%", "0%", "25%", "50%", "75%", "100%"],
+                       fontsize=7)
+    ax.set_xlabel("Usage (%)", fontsize=8)
+    ax.set_title("Pitch Usage", fontsize=11, fontweight="bold", pad=18)
+    ax.text(-50, len(pitches_present) - 0.15, "vs LHH", ha="center", va="bottom",
+            fontsize=8, fontweight="bold", color="#555")
+    ax.text(50, len(pitches_present) - 0.15, "vs RHH", ha="center", va="bottom",
+            fontsize=8, fontweight="bold", color="#555")
+    for spine in ["top", "right", "left"]:
+        ax.spines[spine].set_visible(False)
+    ax.grid(True, axis="x", alpha=0.15, linewidth=0.4)
+
+def _ss_build_table(sm, pitch_order):
+    rows = []
+    total = len(sm)
+    for pt in pitch_order:
+        sub = sm[sm["PitchType"] == pt]
+        if len(sub) == 0:
+            continue
+        cnt = len(sub)
+        iz_full = in_zone(sub)
+        oz_full = sub[~iz_full]
+        chase_pct = 100 * _ss_is_swing(oz_full).sum() / len(oz_full) if len(oz_full) > 0 else 0.0
+        swings_full = _ss_is_swing(sub)
+        n_sw = swings_full.sum()
+        whiff_pct = 100 * (sub[swings_full]["PitchCall"] == "StrikeSwinging").sum() / n_sw if n_sw > 0 else 0.0
+        zone_pct = 100 * iz_full.sum() / cnt if cnt else np.nan
+        rows.append({
+            "Pitch":    SS_PITCH_DISPLAY.get(pt, pt),
+            "Color":    pc(pt),
+            "Count":    cnt,
+            "Pitch%":   100 * cnt / total,
+            "Velocity": sub["RelSpeed"].mean(),
+            "Max":      sub["RelSpeed"].max(),
+            "iVB":      sub["InducedVertBreak"].mean(),
+            "HB":       sub["HorzBreak"].mean(),
+            "Spin":     sub["SpinRate"].mean(),
+            "HAVAA":    _havaa_mean(sub, pt),
+            "vRel":     sub["RelHeight"].mean(),
+            "hRel":     sub["RelSide"].mean(),
+            "Ext":      sub["Extension"].mean(),
+            "Zone%":    zone_pct,
+            "Chase%":   chase_pct,
+            "Whiff%":   whiff_pct,
+        })
+
+    iz_all = in_zone(sm)
+    oz_all = sm[~iz_all]
+    chase_all = 100 * _ss_is_swing(oz_all).sum() / len(oz_all) if len(oz_all) > 0 else 0.0
+    swings_all = _ss_is_swing(sm)
+    n_sw_all = swings_all.sum()
+    whiff_all = 100 * (sm[swings_all]["PitchCall"] == "StrikeSwinging").sum() / n_sw_all if n_sw_all > 0 else 0.0
+    rows.append({
+        "Pitch": "All", "Color": "#FFFFFF", "Count": total, "Pitch%": 100.0,
+        "Velocity": np.nan, "Max": np.nan, "iVB": np.nan, "HB": np.nan,
+        "Spin": np.nan, "HAVAA": np.nan, "vRel": np.nan, "hRel": np.nan,
+        "Ext": sm["Extension"].mean(),
+        "Zone%": 100 * iz_all.sum() / total if total else np.nan,
+        "Chase%": chase_all, "Whiff%": whiff_all,
+    })
+    return pd.DataFrame(rows)
+
+def _ss_draw_table(ax, df):
+    ax.axis("off")
+    cols = ["Pitch Name", "Count", "Pitch%", "Velocity", "Max", "iVB", "HB", "Spin",
+            "HAVAA", "vRel", "hRel", "Ext.", "Zone%", "Chase%", "Whiff%"]
+    df_keys = ["Pitch", "Count", "Pitch%", "Velocity", "Max", "iVB", "HB", "Spin",
+               "HAVAA", "vRel", "hRel", "Ext", "Zone%", "Chase%", "Whiff%"]
+    fmts = {
+        "Count":    lambda v: f"{int(v)}",
+        "Pitch%":   lambda v: f"{v:.1f}%",
+        "Velocity": lambda v: f"{v:.1f}" if pd.notna(v) else "—",
+        "Max":      lambda v: f"{v:.1f}" if pd.notna(v) else "—",
+        "iVB":      lambda v: f"{v:.1f}" if pd.notna(v) else "—",
+        "HB":       lambda v: f"{v:.1f}" if pd.notna(v) else "—",
+        "Spin":     lambda v: f"{v:.0f}" if pd.notna(v) else "—",
+        "HAVAA":    lambda v: f"{v:+.1f}" if pd.notna(v) else "—",
+        "vRel":     lambda v: f"{v:.1f}" if pd.notna(v) else "—",
+        "hRel":     lambda v: f"{v:.1f}" if pd.notna(v) else "—",
+        "Ext":      lambda v: f"{v:.1f}" if pd.notna(v) else "—",
+        "Zone%":    lambda v: f"{v:.1f}%" if pd.notna(v) else "—",
+        "Chase%":   lambda v: f"{v:.1f}%" if pd.notna(v) else "—",
+        "Whiff%":   lambda v: f"{v:.1f}%" if pd.notna(v) else "—",
+    }
+
+    cell_text, cell_colors = [], []
+    for _, row in df.iterrows():
+        line, clrs = [], []
+        for c, kk in zip(cols, df_keys):
+            if kk == "Pitch":
+                line.append(row["Pitch"])
+                clrs.append(row["Color"] if row["Pitch"] != "All" else "#FFFFFF")
+            else:
+                v = row[kk]
+                line.append(fmts[kk](v) if kk in fmts else str(v))
+                clrs.append("#FFFFFF")
+        cell_text.append(line)
+        cell_colors.append(clrs)
+
+    header_colors = ["#2C2C2C"] * len(cols)
+    table = ax.table(cellText=cell_text, colLabels=cols,
+                     cellColours=cell_colors, colColours=header_colors,
+                     cellLoc="center", loc="center")
+    table.auto_set_font_size(False)
+    table.set_fontsize(8)
+    table.scale(1, 1.55)
+
+    for j in range(len(cols)):
+        cell = table[(0, j)]
+        cell.set_text_props(color="white", fontweight="bold")
+        cell.set_edgecolor("#1a1a1a"); cell.set_linewidth(0.5)
+
+    n_rows = len(df)
+    for i in range(1, n_rows + 1):
+        for j in range(len(cols)):
+            cell = table[(i, j)]
+            cell.set_edgecolor("#cccccc"); cell.set_linewidth(0.4)
+            if j == 0:
+                is_all = (df.iloc[i - 1]["Pitch"] == "All")
+                cell.set_text_props(fontweight="bold",
+                                    color="#1a1a1a" if is_all else "white")
+
+    widths = [1.5, 0.65, 0.75, 0.95, 0.7, 0.65, 0.65, 0.75, 0.65, 0.65, 0.65,
+              0.65, 0.8, 0.85, 0.85]
+    total_w = sum(widths)
+    for j, w in enumerate(widths):
+        for i in range(n_rows + 1):
+            table[(i, j)].set_width(w / total_w)
+
+def generate_season_summary(pitcher_name, outings, date_from, date_to):
+    """
+    One-page Munn-style season pitching summary:
+    header / velocity ridges / avg-movement breaks / usage bars / pitch table.
+    """
+    all_dfs = [p_df.copy() for p_df, gdate, opp in outings]
+    if not all_dfs:
+        return None
+    sm = pd.concat(all_dfs, ignore_index=True)
+    if len(sm) == 0:
+        return None
+
+    # Order pitch types fastest -> slowest (matches the reference layout)
+    pts_present = [pt for pt in sm["PitchType"].dropna().unique() if pt]
+    pitch_order = sorted(
+        pts_present,
+        key=lambda x: sm.loc[sm["PitchType"] == x, "RelSpeed"].median()
+        if not sm.loc[sm["PitchType"] == x, "RelSpeed"].dropna().empty else 0,
+        reverse=True,
+    )
+
+    hand = _hand_label(sm)
+    display = _display_name(pitcher_name)
+    table_df = _ss_build_table(sm, pitch_order)
+
+    fig = plt.figure(figsize=(11, 8.5), facecolor="white")
+    gs = GridSpec(nrows=3, ncols=3, figure=fig,
+                  height_ratios=[0.9, 3.0, 2.5],
+                  width_ratios=[1, 1, 1],
+                  left=0.045, right=0.965, top=0.96, bottom=0.045,
+                  hspace=0.45, wspace=0.30)
+
+    ax_hdr = fig.add_subplot(gs[0, :]); ax_hdr.axis("off")
+    ax_hdr.text(0.5, 0.92, display, ha="center", va="top",
+                fontsize=22, fontweight="bold", color="#1a1a1a")
+    sub_bits = [b for b in [hand, f"{len(outings)} outings"] if b]
+    ax_hdr.text(0.5, 0.58, "  •  ".join(sub_bits), ha="center", va="top",
+                fontsize=10, color="#555")
+    ax_hdr.text(0.5, 0.38, "Season Pitching Summary", ha="center", va="top",
+                fontsize=13, fontweight="bold", color="#1a1a1a")
+    try:
+        season_label = f"{date_from:%b %d} – {date_to:%b %d, %Y}"
+    except Exception:
+        season_label = f"{date_from} – {date_to}"
+    ax_hdr.text(0.5, 0.18, season_label, ha="center", va="top",
+                fontsize=9, style="italic", color="#777")
+
+    _ss_plot_velo_distribution(fig.add_subplot(gs[1, 0]), sm, pitch_order)
+    _ss_plot_breaks(fig.add_subplot(gs[1, 1]), sm, pitch_order)
+    _ss_plot_usage(fig.add_subplot(gs[1, 2]), sm, pitch_order)
+    _ss_draw_table(fig.add_subplot(gs[2, :]), table_df)
 
     return fig
 
