@@ -739,24 +739,34 @@ def fmt(s, fn="mean", d=1):
 # ---------------------------------------------------------------------------
 # Raw VAA is heavily confounded by the height at which the pitch crosses the
 # plate (a letter-high pitch is naturally flatter than a knee-high one). HAVAA
-# removes that dependency: HAVAA = actual VAA - expected VAA at that plate
-# height, where expected VAA = b0 + b1 * PlateLocHeight.
-# Positive HAVAA = FLATTER than a typical pitch of that type at the same height.
+# removes that bias by normalizing each pitch's VAA to a common plate height
+# (HAVAA_REF_HEIGHT) using the pitch type's VAA-vs-height slope:
+#     HAVAA = VAA - b1 * (PlateLocHeight - HAVAA_REF_HEIGHT)
+# The result is an ACTUAL approach angle (deg) with the high/low bias removed —
+# i.e. "what this pitch's VAA would be if it crossed the plate at 2.5 ft."
+# Less negative = flatter than a typical pitch of that type.
 #
-# Coefficients are per-pitch-type OLS fits (VAA ~ PlateLocHeight) on 222,705
+# b1 slopes are per-pitch-type OLS fits (VAA ~ PlateLocHeight) on 222,705
 # D1 pitches (2026-02-14, 02-28, 03-14, 04-11, 05-02). Fastball R^2 = 0.76.
+# (b0 kept for reference; only b1 is used for the height adjustment.)
+HAVAA_REF_HEIGHT = 2.5  # feet, ~ middle of the strike zone
+
 HAVAA_COEFFS = {
-    "Fastball":  (-8.1506, 1.0733),
-    "Sinker":    (-8.4070, 1.0656),
-    "Cutter":    (-9.3298, 1.0705),
-    "Slider":    (-10.1431, 1.0521),
-    "Curveball": (-11.4301, 0.9818),
-    "ChangeUp":  (-9.5234, 1.0623),
-    "Other":     (-7.9380, 1.0594),
+    "Fastball":    (-8.1506, 1.0733),
+    "Sinker":      (-8.4070, 1.0656),
+    "Cutter":      (-9.3298, 1.0705),
+    "Slider":      (-10.1431, 1.0521),
+    "Sweeper":     (-10.1431, 1.0521),  # slider family
+    "Curveball":   (-11.4301, 0.9818),
+    "ChangeUp":    (-9.5234, 1.0623),
+    "Splitter":    (-9.5234, 1.0623),   # changeup family
+    "Knuckleball": (-7.9380, 1.0594),
+    "Other":       (-7.9380, 1.0594),
 }
 
 def _havaa_mean(s, pt):
-    """Mean Height-Adjusted VAA for a pitch-type subset s. np.nan if unavailable."""
+    """Mean Height-Adjusted VAA (approach angle, deg) for a pitch-type subset s.
+    np.nan if unavailable."""
     co = HAVAA_COEFFS.get(pt)
     if co is None:
         return np.nan
@@ -764,15 +774,15 @@ def _havaa_mean(s, pt):
     sub = s[["VertApprAngle", "PlateLocHeight"]].dropna()
     if sub.empty:
         return np.nan
-    resid = sub["VertApprAngle"] - (b0 + b1 * sub["PlateLocHeight"])
-    return float(resid.mean())
+    adj = sub["VertApprAngle"] - b1 * (sub["PlateLocHeight"] - HAVAA_REF_HEIGHT)
+    return float(adj.mean())
 
 def havaa_fmt(s, pt, d=1):
-    """Formatted (signed) mean HAVAA for table cells; '—' if unavailable."""
+    """Formatted mean HAVAA angle for table cells; '—' if unavailable."""
     v = _havaa_mean(s, pt)
     if v is None or (isinstance(v, float) and np.isnan(v)):
         return "—"
-    return f"{v:+.{d}f}"
+    return f"{v:.{d}f}"
 
 # ===========================================================================
 # DRAWING FUNCTIONS
@@ -2773,7 +2783,7 @@ def _ss_draw_table(ax, df):
         "iVB":      lambda v: f"{v:.1f}" if pd.notna(v) else "—",
         "HB":       lambda v: f"{v:.1f}" if pd.notna(v) else "—",
         "Spin":     lambda v: f"{v:.0f}" if pd.notna(v) else "—",
-        "HAVAA":    lambda v: f"{v:+.1f}" if pd.notna(v) else "—",
+        "HAVAA":    lambda v: f"{v:.1f}" if pd.notna(v) else "—",
         "vRel":     lambda v: f"{v:.1f}" if pd.notna(v) else "—",
         "hRel":     lambda v: f"{v:.1f}" if pd.notna(v) else "—",
         "Ext":      lambda v: f"{v:.1f}" if pd.notna(v) else "—",
