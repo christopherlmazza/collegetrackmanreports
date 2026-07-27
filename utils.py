@@ -364,20 +364,48 @@ def sf(v):
     try: return float(v)
     except: return np.nan
 
+# Canonical pitch-type names used everywhere in the app (colors, HAVAA,
+# percentiles, season-summary display). Maps every TrackMan Auto/Tagged spelling
+# (and common abbreviations) to one canonical label.
+PITCH_TYPE_CANON = {
+    "fastball": "Fastball", "fourseam": "Fastball", "fourseamfastball": "Fastball",
+    "4seam": "Fastball", "ff": "Fastball",
+    "sinker": "Sinker", "twoseam": "Sinker", "twoseamfastball": "Sinker",
+    "2seam": "Sinker", "si": "Sinker", "ft": "Sinker",
+    "cutter": "Cutter", "fc": "Cutter",
+    "slider": "Slider", "sl": "Slider", "slurve": "Slider",
+    "sweeper": "Sweeper", "st": "Sweeper",
+    "curveball": "Curveball", "curve": "Curveball", "cu": "Curveball",
+    "kc": "Curveball", "knucklecurve": "Curveball",
+    "changeup": "ChangeUp", "ch": "ChangeUp",
+    "splitter": "Splitter", "splitfinger": "Splitter", "fs": "Splitter",
+    "forkball": "Splitter",
+    "knuckleball": "Knuckleball", "kn": "Knuckleball",
+}
+
+def _canon_pt(name):
+    """Map any pitch-type spelling to a canonical label, or None if unknown."""
+    key = "".join(ch for ch in str(name or "").lower() if ch.isalnum())
+    return PITCH_TYPE_CANON.get(key)
+
 def resolve_pt(row):
     """
-    Resolve the pitch type for a row.
-    PRIORITY: AutoPitchType (TrackMan's automatic classification based on
-    spin/movement/velo) over TaggedPitchType (operator-entered).
-    Auto is more reliable because manual taggers frequently misclassify
-    pitches based on outcome (e.g. a hung slider tagged as a changeup).
-    Falls back to Tagged only when Auto is empty/Undefined, then "Other".
+    Resolve a row's canonical pitch type.
+    Source of truth is TrackMan's AutoPitchType; fall back to the operator-entered
+    TaggedPitchType, then "Other". Names are normalized to canonical labels
+    (e.g. "Four-Seam" -> "Fastball", "Changeup" -> "ChangeUp").
+
+    NOTE: the old unsupervised DBSCAN/KMeans re-clustering
+    (classify_pitches_for_pitcher / auto_correct_pitch_types) was removed because
+    it mislabeled pitches (e.g. inventing Sweepers). We trust AutoPitchType now.
     """
-    # Cast to string to avoid categorical-dtype comparison issues
     a = str(row.get("AutoPitchType", "") or "").strip()
     t = str(row.get("TaggedPitchType", "") or "").strip()
-    if a and a not in ("", "Undefined", "nan", "None"): return a
-    if t and t not in ("", "Undefined", "nan", "None"): return t
+    for v in (a, t):
+        if v and v not in ("", "Undefined", "nan", "None"):
+            c = _canon_pt(v)
+            if c:
+                return c
     return "Other"
 
 def calc_xwoba(ev, la):
@@ -708,25 +736,111 @@ def classify_pitches_for_pitcher(pdf):
     pdf["PitchType"] = pdf["PitchType"].replace(PT_NORMALIZE)
     return pdf
 
+# ---------------------------------------------------------------------------
+# Pitch classification: base label + movement-based refinement
+# ---------------------------------------------------------------------------
+# Pitch tagging is NOT a pure if/then. We take the best available label from
+# resolve_pt (AutoPitchType, then human tag), then apply HIGH-CONFIDENCE
+# movement refinements that surface the distinctions the raw labels miss —
+# Sinker, Sweeper, Slurve — only when the pitch's shape is unambiguous. Cutters,
+# changeups and splitters are left as-is, so a cutting four-seam stays a fastball
+# and a high-slot changeup (with more IVB than usual) stays a changeup.
+#
+# Prototypes: (dV = velo - pitcher's fastball, IVB, arm-side HB, spin), from D1
+# tagged medians. Used ONLY to classify the rare pitch with no usable label.
+_PT_PROTO = {
+    "Fastball":  (-0.7, 16.7,  10.6, 2215),
+    "Sinker":    (-0.9,  8.9,  16.7, 2154),
+    "Cutter":    (-6.4,  6.0,  -1.7, 2332),
+    "Slider":    (-10.1, 0.5,  -6.4, 2383),
+    "Sweeper":   (-11.7, -0.5,-13.9, 2505),
+    "Slurve":    (-11.0, -5.0,-13.0, 2450),
+    "Curveball": (-13.0, -9.4, -8.8, 2404),
+    "ChangeUp":  (-8.5,  6.7,  14.5, 1713),
+    "Splitter":  (-9.2,  5.1,   9.1, 1189),
+}
+_PT_SCALE  = np.array([5.0, 5.0, 5.0, 300.0])
+_PT_WEIGHT = np.array([0.8, 1.1, 1.1, 0.6])   # movement > velocity > spin
+
+def _arm_side_hb(df):
+    """HorzBreak mirrored so arm-side run is POSITIVE and glove-side sweep is
+    NEGATIVE, using each pitcher's fastball as the reference — no handedness
+    field required (it is usually empty in the data)."""
+    hb = pd.to_numeric(df["HorzBreak"], errors="coerce")
+    overall = np.sign(hb.median())
+    overall = overall if overall != 0 else 1.0
+    if "Pitcher" in df.columns:
+        fb = df[df["PitchType"].isin(["Fastball", "Sinker"])]
+        med = fb.groupby("Pitcher")["HorzBreak"].median() if len(fb) else pd.Series(dtype=float)
+        sign = np.sign(df["Pitcher"].map(med))
+        sign = sign.where(sign != 0).fillna(overall)
+    else:
+        sign = pd.Series(overall, index=df.index)
+    return hb * sign
+
+def classify_pitch_types(df):
+    """Return df with 'PitchType' set to canonical labels: resolve_pt base label
+    plus movement-based Sinker/Sweeper/Slurve refinement. See notes above."""
+    if df is None or len(df) == 0:
+        return df
+    df = df.copy()
+    df["PitchType"] = df.apply(resolve_pt, axis=1)
+    need = {"InducedVertBreak", "HorzBreak", "RelSpeed", "SpinRate"}
+    if not need.issubset(df.columns):
+        return df  # no movement data — keep base labels
+    ivb   = pd.to_numeric(df["InducedVertBreak"], errors="coerce")
+    armhb = _arm_side_hb(df)
+    ab    = armhb.abs()
+    spin  = pd.to_numeric(df["SpinRate"], errors="coerce")
+    velo  = pd.to_numeric(df["RelSpeed"], errors="coerce")
+    base  = df["PitchType"].astype(str)
+    out   = base.copy()
+
+    breaking = base.isin(["Slider", "Curveball", "Sweeper", "Slurve"])
+    # Sweeper: little drop + big glove-side sweep
+    out = out.mask(breaking & (ivb >= -3) & (ab >= 13), "Sweeper")
+    # Slurve: moderate drop + big sweep (slider/curveball hybrid)
+    out = out.mask(breaking & (out != "Sweeper") & ivb.between(-9, -2) & (ab >= 11), "Slurve")
+    # Fastball <-> Sinker only on a strong sink+run / ride signal
+    out = out.mask((base == "Fastball") & (ivb <= 12) & (armhb >= 14), "Sinker")
+    out = out.mask((base == "Sinker")   & (ivb >= 16) & (armhb <= 12), "Fastball")
+
+    # Rare pitch with no usable label -> nearest movement prototype
+    unk = base.eq("Other")
+    if unk.any():
+        if "Pitcher" in df.columns:
+            tmp = df.assign(_v=velo)[out.isin(["Fastball", "Sinker"])]
+            fbmed = tmp.groupby("Pitcher")["_v"].median()
+            FBv = df["Pitcher"].map(fbmed)
+        else:
+            FBv = pd.Series(np.nan, index=df.index)
+        FBv = FBv.fillna(velo.median())
+        dv = velo - FBv
+        order = list(_PT_PROTO.keys())
+        P = np.array([_PT_PROTO[k] for k in order], dtype=float)
+        idx = df.index[unk]
+        X = np.column_stack([dv.loc[idx], ivb.loc[idx], armhb.loc[idx], spin.loc[idx]]).astype(float)
+        X = np.where(np.isnan(X), 0.0, X)
+        dist = (((X[:, None, :] - P[None, :, :]) / _PT_SCALE) ** 2 * _PT_WEIGHT).sum(axis=2)
+        out.loc[idx] = [order[i] for i in dist.argmin(axis=1)]
+
+    df["PitchType"] = out.where(out.notna(), "Other")
+    return df
+
 def auto_correct_pitch_types(pitcher_df):
+    """Apply movement-based pitch classification (base label + Sinker/Sweeper/
+    Slurve refinement). Returns (df, n_changed) for backward compatibility.
+
+    NOTE: the old unsupervised DBSCAN/KMeans re-clustering was removed — it
+    mislabeled pitches. This rule-based refinement trusts the base label and only
+    overrides it when pitch shape is unambiguous.
     """
-    Backwards-compatible wrapper: now uses the rule-based classifier per pitcher.
-    Returns (df, n_corrections). n_corrections is approximate (count of rows
-    whose label changed vs. input).
-    """
-    if not AUTO_CORRECT_PITCHES:
+    if pitcher_df is None or len(pitcher_df) == 0:
         return pitcher_df, 0
-    df = pitcher_df.copy()
-    orig_labels = df.get("PitchType", pd.Series(["Other"] * len(df), index=df.index)).copy()
-    out_parts = []
-    for pname, pdf in df.groupby("Pitcher"):
-        if len(pdf) < 5:
-            out_parts.append(pdf)
-            continue
-        out_parts.append(classify_pitches_for_pitcher(pdf))
-    out = pd.concat(out_parts).loc[df.index]
-    corrections = int((out["PitchType"] != orig_labels).sum())
-    return out, corrections
+    orig = pitcher_df["PitchType"].astype(str).values if "PitchType" in pitcher_df.columns else None
+    out = classify_pitch_types(pitcher_df)
+    n = int((out["PitchType"].astype(str).values != orig).sum()) if orig is not None else 0
+    return out, n
 
 def fmt(s, fn="mean", d=1):
     v = s.dropna()
