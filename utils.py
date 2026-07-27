@@ -799,35 +799,61 @@ def classify_pitch_types(df):
     base  = df["PitchType"].astype(str)
     out   = base.copy()
 
-    breaking = base.isin(["Slider", "Curveball", "Sweeper", "Slurve"])
-    # Sweeper: little drop + big glove-side sweep
-    out = out.mask(breaking & (ivb >= -3) & (ab >= 13), "Sweeper")
-    # Slurve: moderate drop + big sweep (slider/curveball hybrid)
-    out = out.mask(breaking & (out != "Sweeper") & ivb.between(-9, -2) & (ab >= 11), "Slurve")
-    # Fastball <-> Sinker only on a strong sink+run / ride signal
-    out = out.mask((base == "Fastball") & (ivb <= 12) & (armhb >= 14), "Sinker")
-    out = out.mask((base == "Sinker")   & (ivb >= 16) & (armhb <= 12), "Fastball")
+    # Carve-outs are decided at the (pitcher, base-type) GROUP level using the
+    # group's MEDIAN movement — so a few outlier pitches can never splinter off
+    # into their own type. A whole group flips together, or not at all.
+    autoc = df["AutoPitchType"].map(_canon_pt) if "AutoPitchType" in df.columns else pd.Series(index=df.index, dtype=object)
+    has_p = "Pitcher" in df.columns
+    key = [df["Pitcher"], base] if has_p else [base]
+    gI = ivb.groupby(key).transform("median")
+    gA = ab.groupby(key).transform("median")
+    gH = armhb.groupby(key).transform("median")
+    gSink = autoc.eq("Sinker").groupby(key).transform("mean")   # AutoPitchType cross-reference
+    gN = base.groupby(key).transform("size")
+    tot = base.groupby(df["Pitcher"]).transform("size") if has_p else pd.Series(len(df), index=df.index)
+    # a carve-out only fires for a group that is a real part of the arsenal
+    elig = (gN >= 6) & (gN / tot >= 0.10)
 
-    # Rare pitch with no usable label -> nearest movement prototype
-    unk = base.eq("Other")
-    if unk.any():
-        if "Pitcher" in df.columns:
-            tmp = df.assign(_v=velo)[out.isin(["Fastball", "Sinker"])]
-            fbmed = tmp.groupby("Pitcher")["_v"].median()
-            FBv = df["Pitcher"].map(fbmed)
-        else:
-            FBv = pd.Series(np.nan, index=df.index)
-        FBv = FBv.fillna(velo.median())
-        dv = velo - FBv
-        order = list(_PT_PROTO.keys())
-        P = np.array([_PT_PROTO[k] for k in order], dtype=float)
-        idx = df.index[unk]
-        X = np.column_stack([dv.loc[idx], ivb.loc[idx], armhb.loc[idx], spin.loc[idx]]).astype(float)
-        X = np.where(np.isnan(X), 0.0, X)
-        dist = (((X[:, None, :] - P[None, :, :]) / _PT_SCALE) ** 2 * _PT_WEIGHT).sum(axis=2)
-        out.loc[idx] = [order[i] for i in dist.argmin(axis=1)]
+    br = base.isin(["Slider", "Curveball"])
+    # Sweeper: little drop + big glove-side sweep
+    out = out.mask(br & elig & (gI >= -3) & (gA >= 13), "Sweeper")
+    # Slurve: moderate drop + big sweep (slider/curveball hybrid)
+    out = out.mask(br & elig & (out != "Sweeper") & gI.between(-9, -2) & (gA >= 11), "Slurve")
+    # Fastball -> Sinker only if the group sinks/runs AND AutoPitchType agrees
+    out = out.mask((base == "Fastball") & elig & (gI <= 12) & (gH >= 14) & (gSink >= 0.5), "Sinker")
 
     df["PitchType"] = out.where(out.notna(), "Other")
+    # Consolidation: dissolve tiny per-pitcher groups (stray mis-tags, or a pitch
+    # with too little support) into the pitcher's nearest group by movement — so a
+    # report never shows random one-off pitch types.
+    df = _consolidate_pitch_groups(df, velo, ivb, armhb)
+    return df
+
+def _consolidate_pitch_groups(df, velo, ivb, armhb):
+    """Merge tiny per-pitcher pitch-type groups into the nearest surviving group
+    by movement. A group is 'tiny' if it has < 3 pitches, or < 6 and < 3% usage.
+    'Other' is always dissolved when the pitcher has any real group."""
+    lab = df["PitchType"].astype(str).copy()
+    feat = pd.DataFrame({"v": velo, "i": ivb, "h": armhb})
+    scale = np.array([5.0, 5.0, 5.0])
+    groups = df.groupby("Pitcher").groups.items() if "Pitcher" in df.columns else [(None, list(df.index))]
+    for _, idx in groups:
+        idx = list(idx)
+        n = len(idx)
+        vc = lab.loc[idx].value_counts()
+        small = {l for l, c in vc.items() if (c < 3 or (c < 6 and c / n < 0.03))}
+        if "Other" in vc.index:
+            small.add("Other")
+        big = [l for l in vc.index if l not in small and l != "Other"]
+        if not big:
+            continue
+        cent = {l: feat.loc[[i for i in idx if lab.at[i] == l]].mean().values for l in big}
+        for i in idx:
+            if lab.at[i] in small:
+                x = feat.loc[i].values
+                lab.at[i] = min(big, key=lambda l: (((x - cent[l]) / scale) ** 2).sum())
+    df = df.copy()
+    df["PitchType"] = lab
     return df
 
 def auto_correct_pitch_types(pitcher_df):
