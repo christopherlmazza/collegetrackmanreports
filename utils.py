@@ -390,16 +390,18 @@ def _canon_pt(name):
 
 def resolve_pt(row):
     """
-    Resolve a row's canonical pitch type from TrackMan's AutoPitchType (fall back
-    to the human TaggedPitchType, then "Other"). Names are normalized to canonical
-    labels ("Four-Seam" -> "Fastball", "Changeup" -> "ChangeUp").
+    Resolve a row's canonical BASE pitch type from the human TaggedPitchType
+    (fall back to TrackMan's AutoPitchType, then "Other"). TaggedPitchType is used
+    first because it's present on ~96% of pitches and is far more accurate than
+    AutoPitchType (which is unreliable in college). Names are normalized to
+    canonical labels ("Four-Seam" -> "Fastball", "Changeup" -> "ChangeUp").
 
-    Movement-based reclassification is disabled — pitch types come straight from
-    AutoPitchType.
+    Sweeper / Slurve / Sinker carve-outs are applied from pitch movement in
+    classify_pitch_types().
     """
-    a = str(row.get("AutoPitchType", "") or "").strip()
     t = str(row.get("TaggedPitchType", "") or "").strip()
-    for v in (a, t):
+    a = str(row.get("AutoPitchType", "") or "").strip()
+    for v in (t, a):
         if v and v not in ("", "Undefined", "nan", "None"):
             c = _canon_pt(v)
             if c:
@@ -859,7 +861,12 @@ def auto_correct_pitch_types(pitcher_df):
     mislabeled pitches. This rule-based refinement trusts the base label and only
     overrides it when pitch shape is unambiguous.
     """
-    return pitcher_df, 0
+    if pitcher_df is None or len(pitcher_df) == 0:
+        return pitcher_df, 0
+    orig = pitcher_df["PitchType"].astype(str).values if "PitchType" in pitcher_df.columns else None
+    out = classify_pitch_types(pitcher_df)
+    n = int((out["PitchType"].astype(str).values != orig).sum()) if orig is not None else 0
+    return out, n
 
 def fmt(s, fn="mean", d=1):
     v = s.dropna()
