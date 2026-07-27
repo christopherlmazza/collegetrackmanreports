@@ -390,18 +390,21 @@ def _canon_pt(name):
 
 def resolve_pt(row):
     """
-    Resolve a row's canonical pitch type.
-    Source of truth is TrackMan's AutoPitchType; fall back to the operator-entered
-    TaggedPitchType, then "Other". Names are normalized to canonical labels
-    (e.g. "Four-Seam" -> "Fastball", "Changeup" -> "ChangeUp").
+    Resolve a row's canonical BASE pitch type.
 
-    NOTE: the old unsupervised DBSCAN/KMeans re-clustering
-    (classify_pitches_for_pitcher / auto_correct_pitch_types) was removed because
-    it mislabeled pitches (e.g. inventing Sweepers). We trust AutoPitchType now.
+    Source of truth is the human TaggedPitchType — it's present on ~96% of pitches
+    and is the most accurate source. (Validation against 4,225 properly-tagged MLB
+    Statcast pitches showed movement-only classification tops out ~79%, and
+    TrackMan's AutoPitchType is unreliable in college.) Fall back to AutoPitchType,
+    then "Other". Names are normalized to canonical labels ("Four-Seam" ->
+    "Fastball", "Changeup" -> "ChangeUp").
+
+    Sweeper / Slurve / Sinker carve-outs are applied later, from pitch movement,
+    in classify_pitch_types() — those are the distinctions humans/auto miss.
     """
-    a = str(row.get("AutoPitchType", "") or "").strip()
     t = str(row.get("TaggedPitchType", "") or "").strip()
-    for v in (a, t):
+    a = str(row.get("AutoPitchType", "") or "").strip()
+    for v in (t, a):
         if v and v not in ("", "Undefined", "nan", "None"):
             c = _canon_pt(v)
             if c:
