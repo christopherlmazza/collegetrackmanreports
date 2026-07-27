@@ -390,21 +390,16 @@ def _canon_pt(name):
 
 def resolve_pt(row):
     """
-    Resolve a row's canonical BASE pitch type.
+    Resolve a row's canonical pitch type from TrackMan's AutoPitchType (fall back
+    to the human TaggedPitchType, then "Other"). Names are normalized to canonical
+    labels ("Four-Seam" -> "Fastball", "Changeup" -> "ChangeUp").
 
-    Source of truth is the human TaggedPitchType — it's present on ~96% of pitches
-    and is the most accurate source. (Validation against 4,225 properly-tagged MLB
-    Statcast pitches showed movement-only classification tops out ~79%, and
-    TrackMan's AutoPitchType is unreliable in college.) Fall back to AutoPitchType,
-    then "Other". Names are normalized to canonical labels ("Four-Seam" ->
-    "Fastball", "Changeup" -> "ChangeUp").
-
-    Sweeper / Slurve / Sinker carve-outs are applied later, from pitch movement,
-    in classify_pitch_types() — those are the distinctions humans/auto miss.
+    Movement-based reclassification is disabled — pitch types come straight from
+    AutoPitchType.
     """
-    t = str(row.get("TaggedPitchType", "") or "").strip()
     a = str(row.get("AutoPitchType", "") or "").strip()
-    for v in (t, a):
+    t = str(row.get("TaggedPitchType", "") or "").strip()
+    for v in (a, t):
         if v and v not in ("", "Undefined", "nan", "None"):
             c = _canon_pt(v)
             if c:
@@ -864,12 +859,7 @@ def auto_correct_pitch_types(pitcher_df):
     mislabeled pitches. This rule-based refinement trusts the base label and only
     overrides it when pitch shape is unambiguous.
     """
-    if pitcher_df is None or len(pitcher_df) == 0:
-        return pitcher_df, 0
-    orig = pitcher_df["PitchType"].astype(str).values if "PitchType" in pitcher_df.columns else None
-    out = classify_pitch_types(pitcher_df)
-    n = int((out["PitchType"].astype(str).values != orig).sum()) if orig is not None else 0
-    return out, n
+    return pitcher_df, 0
 
 def fmt(s, fn="mean", d=1):
     v = s.dropna()
@@ -926,6 +916,41 @@ def havaa_fmt(s, pt, d=1):
     if v is None or (isinstance(v, float) and np.isnan(v)):
         return "—"
     return f"{v:.{d}f}"
+
+def _havaa_delta(s, pt):
+    """Raw mean VAA minus HAVAA (how far the actual VAA sits from the
+    height-adjusted value). np.nan if unavailable."""
+    h = _havaa_mean(s, pt)
+    if h is None or (isinstance(h, float) and np.isnan(h)):
+        return np.nan
+    v = pd.to_numeric(s["VertApprAngle"], errors="coerce").dropna()
+    if v.empty:
+        return np.nan
+    return float(v.mean() - h)
+
+def _overlay_havaa_delta(ax, table, col_idx, deltas, fontsize=6):
+    """Draw a small green(+)/red(-) delta (raw VAA - HAVAA) just below the HAVAA
+    value inside the same cell. `deltas` maps table row index (1-based, header=0)
+    -> value. Defensive: any failure is swallowed so it never breaks a report."""
+    try:
+        ax.figure.canvas.draw()  # finalize cell positions after scaling
+    except Exception:
+        pass
+    for (r, c), cell in table.get_celld().items():
+        if c != col_idx or r == 0:
+            continue
+        d = deltas.get(r)
+        if d is None or (isinstance(d, float) and np.isnan(d)):
+            continue
+        try:
+            x = cell.get_x() + cell.get_width() / 2.0
+            y = cell.get_y() + cell.get_height() * 0.17
+            color = "#2f9e44" if d >= 0 else "#e03131"
+            ax.text(x, y, f"{d:+.1f}", transform=ax.transAxes,
+                    ha="center", va="center", fontsize=fontsize,
+                    color=color, fontweight="bold", zorder=8, clip_on=False)
+        except Exception:
+            continue
 
 # ===========================================================================
 # DRAWING FUNCTIONS
@@ -1500,6 +1525,8 @@ def generate_pitcher_page(p, pname, gdate, opp):
                     cell.set_facecolor("#FFFFFF")
                     cell.set_text_props(color=TEXT_COLOR, fontfamily="monospace", fontsize=12)
 
+    _hd = {ri + 1: _havaa_delta(p[p["PitchType"] == pt], pt) for ri, pt in enumerate(pts)}
+    _overlay_havaa_delta(ax_t, tbl, 11, _hd, fontsize=8)
     return fig
 
 # ===========================================================================
@@ -2888,6 +2915,7 @@ def _ss_build_table(sm, pitch_order):
             "HB":       sub["HorzBreak"].mean(),
             "Spin":     sub["SpinRate"].mean(),
             "HAVAA":    _havaa_mean(sub, pt),
+            "HAVAA_delta": _havaa_delta(sub, pt),
             "vRel":     sub["RelHeight"].mean(),
             "hRel":     sub["RelSide"].mean(),
             "Ext":      sub["Extension"].mean(),
@@ -2905,7 +2933,7 @@ def _ss_build_table(sm, pitch_order):
     rows.append({
         "Pitch": "All", "Color": "#FFFFFF", "Count": total, "Pitch%": 100.0,
         "Velocity": np.nan, "Max": np.nan, "iVB": np.nan, "HB": np.nan,
-        "Spin": np.nan, "HAVAA": np.nan, "vRel": np.nan, "hRel": np.nan,
+        "Spin": np.nan, "HAVAA": np.nan, "HAVAA_delta": np.nan, "vRel": np.nan, "hRel": np.nan,
         "Ext": sm["Extension"].mean(),
         "Zone%": 100 * iz_all.sum() / total if total else np.nan,
         "Chase%": chase_all, "Whiff%": whiff_all,
@@ -2978,6 +3006,11 @@ def _ss_draw_table(ax, df):
     for j, w in enumerate(widths):
         for i in range(n_rows + 1):
             table[(i, j)].set_width(w / total_w)
+
+    # small colored (raw VAA - HAVAA) delta beneath the HAVAA value
+    if "HAVAA_delta" in df.columns:
+        deltas = {i + 1: df.iloc[i]["HAVAA_delta"] for i in range(len(df))}
+        _overlay_havaa_delta(ax, table, 8, deltas, fontsize=6)
 
 def generate_season_summary(pitcher_name, outings, date_from, date_to):
     """
